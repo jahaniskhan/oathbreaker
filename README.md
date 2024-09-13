@@ -21,6 +21,7 @@ Ghost Signal is an advanced RF (Radio Frequency) analysis and defense system des
 ## Project Structure
 
 ```
+
 ghost-signal/
 ├── src/
 │   ├── Main.hs

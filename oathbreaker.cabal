@@ -1,4 +1,4 @@
-cabal-version:      3.0
+cabal-version:      2.4
 -- The cabal-version field refers to the version of the .cabal specification,
 -- and can be different from the cabal-install (the tool) version and the
 -- Cabal (the library) version you are using. As such, the Cabal (the library)
@@ -23,10 +23,10 @@ name:               oathbreaker
 version:            0.1.0.0
 
 -- A short (one-line) description of the package.
-synopsis:           signal processing system
+synopsis:           Advanced RF signal processing and threat detection
 
 -- A longer description of the package.
--- description:
+description:        A Haskell project for simulating, analyzing, and defending against RF threats.
 
 -- The license under which the package is released.
 license:            BSD-3-Clause
@@ -35,18 +35,18 @@ license:            BSD-3-Clause
 license-file:       LICENSE
 
 -- The package author(s).
-author:             JahanisKhanis
+author:             Your Name
 
 -- An email address to which users can send suggestions, bug reports, and patches.
-maintainer:         74698323+jahaniskhan@users.noreply.github.com
+maintainer:         your.email@example.com
 
 -- A copyright notice.
 -- copyright:
-category:           defense
+category:           Security
 build-type:         Simple
 
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
-extra-doc-files:    CHANGELOG.md
+extra-source-files: CHANGELOG.md
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 -- extra-source-files:
@@ -55,33 +55,54 @@ common warnings
     ghc-options: -Wall
 
 library
-  hs-source-dirs:      src
-  exposed-modules:     RFProcessor.SignalAcquisition
-                     , RFProcessor.DigitalSignalProcessing
-                     , RFProcessor.SpectralAnalysis
-                     , ThreatDetection.AnomalyDetection
-                     , ThreatDetection.SignatureMatching
-                     , ProactiveDefense.InterferenceGeneration
-                     , ProactiveDefense.AdaptiveJamming
-                     , Utils.SDRInterface
-                     , Utils.DataStructures
-  build-depends:       base >= 4.7 && < 5
-                     , mtl
-  default-language:    Haskell2010
+  exposed-modules:
+    ProactiveDefense.InterferenceGeneration
+    ProactiveDefense.AdaptiveJamming
+    ThreatDetection.AnomalyDetection
+    ThreatDetection.SignatureMatching
+    RFProcessor.DigitalSignalProcessing
+    RFProcessor.SpectralAnalysis
+    RFProcessor.SignalAcquisition
+    Utils.DataStructures
+    Utils.SDRInterface
+    Common.Types
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  build-depends:
+    base >= 4.7 && < 5,
+    vector,          
+    hmatrix >=0.20.0.0,         
+    bytestring >= 0.11.3.1,  
+    binary >= 0.8.9.1,
+    statistics >= 0.16.0.0, 
+    fft,    
+    random,         
+    mtl >= 2.2,
+    mwc-random,
+    hmatrix-gsl
 
-executable oathbreaker-exe
-  hs-source-dirs:      app
-  main-is:             Main.hs
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
-  build-depends:       base
-                     , oathbreaker
-  default-language:    Haskell2010
+executable oathbreaker
+  main-is:          Main.hs
+  other-modules:
+  hs-source-dirs:   app
+  default-language: Haskell2010
+  build-depends:
+    base ^>=4.17.0.0,
+    oathbreaker,
+    Chart,
+    Chart-diagrams,
+    time,
+    text,
+    directory
 
 test-suite oathbreaker-test
-  type:                exitcode-stdio-1.0
-  hs-source-dirs:      test
-  main-is:             Spec.hs
-  build-depends:       base
-                     , oathbreaker
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
-  default-language:    Haskell2010
+  type:             exitcode-stdio-1.0
+  main-is:          Spec.hs
+  other-modules:
+  hs-source-dirs:   test
+  default-language: Haskell2010
+  build-depends:
+    base ^>=4.17.0.0,
+    oathbreaker,
+    hspec,
+    QuickCheck
