@@ -1,108 +1,139 @@
-module RFProcessor.SignalAcquisition 
-    ( acquireSignal
-    , Signal
-    ) where
+{-# LANGUAGE ScopedTypeVariables #-}
 
-import Data.Complex (Complex(..), magnitude)
-import Control.Monad.Except
+module RFProcessor.SignalAcquisition (
+    acquireSignal
+) where
+
+import Numeric.LinearAlgebra
+import Control.Monad.Except (ExceptT(..), withExceptT, throwError)
+import Control.Monad.IO.Class (liftIO)
+import Common.Types (AcquisitionConfig(..), SignalSource(..), AcquisitionError(..), SimulatedSignal(..))
+import Control.Monad (when, replicateM)
 import qualified Data.ByteString.Lazy as BL
-import Data.Binary.Get (runGet, getDoublele, Get)
-import Common.Types (AcquisitionConfig(..), AcquisitionError(..), SignalSource(..), SimulatedSignalType(..))
-import System.IO (IOMode(..), withFile, hFileSize)
-import Control.Exception (try, IOException)
+import qualified Control.Exception as E
+import Data.Binary.Get (Get, runGetOrFail)
+import Data.List (sortBy)
+import Data.Function (on)
+import Data.Complex (Complex(..))
+import System.Random (randomRIO)
 import qualified Numeric.LinearAlgebra as LA
-import Control.Monad (replicateM)
+import Numeric.LinearAlgebra (Matrix, Vector, fromList, toList, eigSH)
+import Data.Binary.Get (runGetOrFail, getDoublehost)
+import Data.Ord (comparing)
 
--- | Type alias for our complex-valued signal
-type Signal = [Complex Double]
+-- | Performs Principal Component Analysis on the given data matrix.
+-- Each row of the input matrix represents an observation,
+-- and each column represents a feature.
+performPCA :: LA.Matrix Double -> Int -> (LA.Matrix Double, LA.Vector Double)
+performPCA dataMatrix numComponents = 
+    let (eigenvalues, eigenvectors) = LA.eigSH $ LA.sym $ LA.tr dataMatrix LA.<> dataMatrix
+        eigenPairs = zip (LA.toList eigenvalues) (LA.toColumns eigenvectors)
+        sortedEigenPairs = sortBy (comparing (negate . fst)) eigenPairs
+        (_, principalComponents) = unzip $ take numComponents sortedEigenPairs
+        transformedData = dataMatrix LA.<> LA.fromColumns principalComponents
+        explainedVariance = LA.fromList $ take numComponents $ LA.toList eigenvalues
+    in (transformedData, explainedVariance)
 
--- | Main function to acquire a signal based on the given configuration
-acquireSignal :: AcquisitionConfig -> IO (Either AcquisitionError Signal)
-acquireSignal config = runExceptT $ do
-    case acqSource config of
-        FileSource path -> acquireFromFile path (acqNumSamples config)
-        SDRSource device -> acquireFromSDR device config
-        SimulatedSource signalType -> acquireSimulated config signalType
+-- | Sorts the indices of the vector in descending order based on the vector's values.
+sortIndices :: Vector Double -> [Int]
+sortIndices v = map snd $ sortBy (flip compare `on` fst) $ zip (toList v) [0..]
 
--- | Acquire signal from a file
--- This function reads complex-valued samples from a binary file
-acquireFromFile :: FilePath -> Int -> ExceptT AcquisitionError IO Signal
-acquireFromFile path numSamples = do
-    -- Attempt to read the file and handle potential IO exceptions
-    fileContents <- withExceptT (const SourceNotFound) $ ExceptT $ try $ BL.readFile path
+-- | Selects a subset of rows or columns based on the provided indices.
+subMatrix :: [Int] -> [Int] -> LA.Matrix Double -> LA.Matrix Double
+subMatrix rowIndices colIndices mat = 
+    LA.fromLists [ [ mat `LA.atIndex` (r, c) | c <- colIndices ] | r <- rowIndices ]
 
-    -- Check if the file has enough data for the requested number of samples
-    let numAvailableSamples = fromIntegral (BL.length fileContents `div` 16) :: Int  -- Convert Int64 to Int
-    when (numAvailableSamples < numSamples) $
-        throwError $ InvalidConfig "File does not contain enough samples"
+-- | Acquire signal based on the configuration
+acquireSignal :: AcquisitionConfig -> ExceptT AcquisitionError IO (LA.Matrix Double, LA.Vector Double)
+acquireSignal config = case signalSource config of
+    SDR -> do
+        let deviceName = device config
+        let filePath = path config
+        liftIO $ putStrLn $ "Acquiring signal from SDR: " ++ deviceName
+        fileContentsResult <- withExceptT (const SourceNotFound)
+                                $ ExceptT (E.try (BL.readFile filePath) :: IO (Either E.IOException BL.ByteString))
+        let numSamples = floor (sampleRate config * duration config) :: Int
+        when (BL.length fileContentsResult < fromIntegral numSamples * 16) -- assuming Double is 8 bytes and Complex Double is 16 bytes
+            $ throwError $ InvalidConfig "File does not contain enough samples"
+        let parseResult = runGetOrFail (replicateM numSamples getComplexSample) fileContentsResult
+        case parseResult of
+            Left (_, _, errMsg) -> throwError $ ParsingFailed errMsg
+            Right (_, _, samples) -> do
+                let dataMatrix = fromLists [ [ realPart s, imagPart s ] | s <- samples ]  -- Assuming 2 features per sample
+                let numComponents = 2
+                let (transformedData, explainedVariance) = performPCA (LA.tr dataMatrix) numComponents
+                return (transformedData, explainedVariance)
+    Simulated simSignal -> do
+        liftIO $ putStrLn "Generating simulated signal"
+        simulatedSamples <- liftIO $ generateSimulatedSignal simSignal (sampleRate config) (duration config)
+        let dataMatrix = LA.fromLists [map realPart simulatedSamples, map imagPart simulatedSamples]
+        let numComponents = 2
+        let (transformedData, explainedVariance) = performPCA (LA.tr dataMatrix) numComponents
+        return (transformedData, explainedVariance)
 
-    -- Parse the binary data into complex numbers
-    let complexSamples = runGet (replicateM numSamples getComplexSample) fileContents
-    return complexSamples
-
--- | Helper function to parse a single complex sample from binary data
+-- | Parse a complex sample from binary data
 getComplexSample :: Get (Complex Double)
 getComplexSample = do
-    real <- getDoublele
-    imag <- getDoublele
+    real <- getDoublehost
+    imag <- getDoublehost
     return (real :+ imag)
 
--- | Acquire signal from an SDR device
--- Note: This is a placeholder. Implement actual SDR interaction here.
-acquireFromSDR :: String -> AcquisitionConfig -> ExceptT AcquisitionError IO Signal
-acquireFromSDR device config = do
-    liftIO $ putStrLn $ "Acquiring signal from SDR: " ++ device
-    -- Placeholder implementation. Replace with actual SDR interaction.
-    return $ replicate (acqNumSamples config) (1.0 :+ 1.0)
+-- | Generate simulated signals based on the signal source
+generateSimulatedSignal :: SimulatedSignal -> Double -> Double -> IO [Complex Double]
+generateSimulatedSignal simSignal sampleRate duration = case simSignal of
+    WhiteNoise -> generateWhiteNoise sampleRate duration
+    Sine freq  -> generateSine freq sampleRate duration
+    MultiTone freqs -> generateMultiTone freqs sampleRate duration
+    QPSK symbolRate -> generateQPSK symbolRate sampleRate duration
 
--- | Generate a simulated signal based on the configuration and signal type
-acquireSimulated :: AcquisitionConfig -> SimulatedSignalType -> ExceptT AcquisitionError IO Signal
-acquireSimulated config signalType = do
-    liftIO $ putStrLn "Generating simulated signal"
-    let sampleRate = acqSampleRate config
-        numSamples = acqNumSamples config
-    case signalType of
-        WhiteNoise -> liftIO generateWhiteNoise
-        Sine freq -> liftIO $ generateTone freq sampleRate numSamples
-        MultiTone freqs -> liftIO $ generateMultiTone freqs sampleRate numSamples
-        QPSK symbolRate -> liftIO $ generateQPSK symbolRate sampleRate numSamples
+-- | Generate white noise samples
+generateWhiteNoise :: Double -> Double -> IO [Complex Double]
+generateWhiteNoise sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+    realParts <- replicateM numSamples (randomRIO (-1.0, 1.0))
+    imagParts <- replicateM numSamples (randomRIO (-1.0, 1.0))
+    return $ zipWith (:+) realParts imagParts
 
--- Helper functions for signal generation
+-- | Generate a sine wave
+generateSine :: Double -> Double -> Double -> IO [Complex Double]
+generateSine freq sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+    let t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+    return [cos (2 * pi * freq * ti) :+ sin (2 * pi * freq * ti) | ti <- t]
 
--- | Generate white noise signal
-generateWhiteNoise :: IO Signal
-generateWhiteNoise = do
-    -- Implement white noise generation
-    -- For example, using System.Random to generate random complex numbers
-    error "generateWhiteNoise: Not implemented"
+-- | Generate multi-tone signal
+generateMultiTone :: [Double] -> Double -> Double -> IO [Complex Double]
+generateMultiTone freqs sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+    let t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+    return [sum [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | f <- freqs] | ti <- t]
 
--- | Generate a sine wave tone
-generateTone :: Double -> Double -> Int -> IO Signal
-generateTone freq sampleRate numSamples = do
-    let t = [0, 1 / sampleRate .. (fromIntegral numSamples - 1) / sampleRate]
-        amplitude = 1.0
-    return [amplitude * (cos (2 * pi * freq * ti) :+ sin (2 * pi * freq * ti)) | ti <- t]
+-- | Generate QPSK signal
+generateQPSK :: Double -> Double -> Double -> IO [Complex Double]
+generateQPSK symbolRate sampleRate duration = do
+    let numSymbols = floor (symbolRate * duration)
+        samplesPerSymbol = floor (sampleRate / symbolRate)
+    symbols <- replicateM numSymbols randomQPSKSymbol
+    return $ concatMap (replicate samplesPerSymbol) symbols
 
--- | Generate a signal with multiple tones
-generateMultiTone :: [Double] -> Double -> Int -> IO Signal
-generateMultiTone freqs sampleRate numSamples = do
-    let t = [0, 1 / sampleRate .. (fromIntegral numSamples - 1) / sampleRate]
-        amplitude = 1.0 / fromIntegral (length freqs)  -- Normalize amplitude
-    return [sum [amplitude * (cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti)) | f <- freqs] | ti <- t]
+-- | Generate a random QPSK symbol
+randomQPSKSymbol :: IO (Complex Double)
+randomQPSKSymbol = do
+    bit1 <- randomRIO (0, 1) :: IO Int
+    bit2 <- randomRIO (0, 1) :: IO Int
+    let symbol = case (bit1, bit2) of
+            (0, 0) -> 1 :+ 1
+            (0, 1) -> (-1) :+ 1
+            (1, 0) -> 1 :+ (-1)
+            (1, 1) -> (-1) :+ (-1)
+    return symbol
 
--- | Generate a QPSK modulated signal
-generateQPSK :: Double -> Double -> Int -> IO Signal
-generateQPSK symbolRate sampleRate numSamples = do
-    -- Implement QPSK signal generation
-    -- This involves generating random symbols and applying QPSK modulation
-    error "generateQPSK: Not implemented"
+-- Local definitions for cov and fromSymmetric
+cov :: LA.Matrix Double -> LA.Matrix Double
+cov matrix =
+    let centered = LA.cmap (\x -> x - LA.sumElements matrix / fromIntegral (LA.size matrix)) matrix
+        n = fromIntegral (LA.rows matrix - 1)
+    in (LA.tr centered LA.<> centered) / n
 
--- | Convert Signal to LA.Matrix (Complex Double) if needed for linear algebra operations
-signalToMatrix :: Signal -> LA.Matrix (LA.Complex Double)
-signalToMatrix signal = 
-    LA.fromColumns [LA.fromList signal]
-
--- | Convert LA.Matrix (Complex Double) back to Signal if needed
-matrixToSignal :: LA.Matrix (LA.Complex Double) -> Signal
-matrixToSignal matrix =
-    map (\c -> LA.realPart c :+ LA.imagPart c) (LA.toList (LA.flatten matrix))
+fromSymmetric :: LA.Matrix Double -> LA.Matrix Double
+fromSymmetric m = (m + LA.tr m) / 2

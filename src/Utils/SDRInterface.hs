@@ -1,36 +1,32 @@
-module Utils.SDRInterface
-    ( initializeSDR
-    , acquireSDRSignal
-    , closeSDR
-    ) where
+module Utils.SDRInterface (
+    initializeSDR,
+    acquireSDRSignal,
+    closeSDR
+) where
 
-import Data.Complex
-import Common.Types (AcquisitionConfig(..), AcquisitionError(..))
+import Control.Monad.Except (ExceptT)
+import Control.Monad.IO.Class (liftIO)
+import Common.Types (AcquisitionError(..), AcquisitionConfig(..))
+import Data.Complex (Complex(..))
 
--- | Initialize the SDR device
--- 
--- @param device The SDR device identifier
--- @return Either an error or a success message
-initializeSDR :: String -> IO (Either AcquisitionError String)
-initializeSDR device = do
-    -- Placeholder for future SDR integration
-    return $ Right "SDR initialized successfully"
+-- | Initialize SDR device
+initializeSDR :: String -> ExceptT AcquisitionError IO ()
+initializeSDR deviceName = do
+    -- Placeholder implementation
+    liftIO $ putStrLn $ "Initializing SDR device: " ++ deviceName
+    -- Add actual SDR initialization logic here
 
--- | Acquire signal from the SDR device
--- 
--- @param device The SDR device identifier
--- @param config The acquisition configuration
--- @return Either an error or the acquired signal
-acquireSDRSignal :: String -> AcquisitionConfig -> IO (Either AcquisitionError [Complex Double])
-acquireSDRSignal device config = do
-    -- Placeholder for future SDR integration
-    return $ Right $ take (acqNumSamples config) $ repeat (1 :+ 1)  -- Placeholder implementation
+-- | Acquire signal from SDR device
+acquireSDRSignal :: String -> AcquisitionConfig -> ExceptT AcquisitionError IO [Complex Double]
+acquireSDRSignal deviceName _config = do  -- Marked 'config' as unused
+    -- Placeholder implementation
+    liftIO $ putStrLn $ "Acquiring signal from SDR device: " ++ deviceName
+    -- Add actual signal acquisition logic here
+    return []  -- Replace with actual signal data
 
--- | Close the SDR device
--- 
--- @param device The SDR device identifier
--- @return Either an error or a success message
-closeSDR :: String -> IO (Either AcquisitionError String)
-closeSDR device = do
-    -- Placeholder for future SDR integration
-    return $ Right "SDR closed successfully"
+-- | Close SDR device
+closeSDR :: String -> ExceptT AcquisitionError IO ()
+closeSDR deviceName = do
+    -- Placeholder implementation
+    liftIO $ putStrLn $ "Closing SDR device: " ++ deviceName
+    -- Add actual SDR closure logic here

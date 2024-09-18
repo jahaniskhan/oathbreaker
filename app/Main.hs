@@ -12,7 +12,7 @@ import RFProcessor.SignalAcquisition
 import Utils.DataStructures
 
 import Data.Complex
-import qualified Data.Vector as V
+-- import qualified Data.Vector as V  -- Not used in this module
 import Graphics.Rendering.Chart.Easy
 import Graphics.Rendering.Chart.Backend.Diagrams
 import Data.Time
@@ -36,16 +36,17 @@ main = do
 
     -- Signal acquisition
     let acquisitionConfig = AcquisitionConfig 
-            { acqSource = SimulatedSource (MultiTone [100, 200])
+            { acqSource = Simulated (MultiTone [100, 200])
             , acqSampleRate = sampleRate
+            , acqDuration = duration
             , acqCenterFreq = centerFreq
-            , acqGain = 1.0
-            , acqNumSamples = numSamples
             }
     
     signalResult <- acquireSignal acquisitionConfig
     case signalResult of
-        Left err -> putStrLn $ "Error acquiring signal: " ++ show err
+        Left err -> do
+            putStrLn $ "Error acquiring signal: " ++ show err
+            logError $ "Signal acquisition failed: " ++ show err
         Right acquiredSignal -> do
             putStrLn "Signal acquired successfully"
 

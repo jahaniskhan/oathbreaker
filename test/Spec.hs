@@ -58,6 +58,20 @@ main = hspec $ do
             any (\a -> anomalyType a == SpectrumAnomaly) anomalies `shouldBe` True
             any (\a -> anomalyType a == TimeFrequencyAnomaly) anomalies `shouldBe` True
 
+        it "should handle empty signal" $ do
+            let emptySignal = [] :: [Complex Double]
+                baseThreshold = 2.0
+                scoreThreshold = 2
+                windowSize = 5
+            detectAnomalies emptySignal baseThreshold scoreThreshold windowSize `shouldBe` []
+
+        it "should handle signal with all identical values" $ do
+            let identicalSignal = replicate 100 (1 :+ 0)
+                baseThreshold = 2.0
+                scoreThreshold = 2
+                windowSize = 5
+            detectAnomalies identicalSignal baseThreshold scoreThreshold windowSize `shouldBe` []
+
     describe "Advanced Signal Processing" $ do
         it "should perform wavelet transform" $ do
             let signal = [1 :+ 0, 2 :+ 0, 3 :+ 0, 4 :+ 0]

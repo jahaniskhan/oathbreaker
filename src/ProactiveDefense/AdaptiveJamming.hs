@@ -7,20 +7,22 @@ import Data.Complex
 import ProactiveDefense.InterferenceGeneration
 import ThreatDetection.AnomalyDetection
 import Numeric.LinearAlgebra
-import qualified Data.Vector as V
+import qualified Data.Vector as V 
 
 -- | Perform adaptive jamming based on detected anomalies
 adaptiveJamming :: [Anomaly] -> Double -> Double -> IO [Complex Double]
 adaptiveJamming anomalies sampleRate duration =
-    concatMap (\anomaly -> generateInterference (Tone (fromIntegral (anomalyFrequencyBin anomaly) * sampleRate / fromIntegral (length anomalies))) sampleRate duration) anomalies
+    concatMap (\anomaly -> generateInterference (Tone (anomalyFrequencyBin anomaly * sampleRate / fromIntegral (length anomalies))) sampleRate duration) anomalies
 
--- | Perform adaptive jamming based on detected anomalies using PCA
+-- Ensure correct linear algebra library is imported
+import qualified Numeric.LinearAlgebra as LA
+
 adaptiveJammingPCA :: [Anomaly] -> Double -> Double -> IO [Complex Double]
 adaptiveJammingPCA anomalies sampleRate duration = do
-    let matrix = fromLists [map anomalyMagnitude anomalies]
-        (eigenvalues, eigenvectors) = eig matrix
-        principalComponents = take 3 $ toColumns eigenvectors
-        jammingFrequencies = concatMap (V.toList . scale sampleRate) principalComponents
+    let matrix = LA.fromLists [map anomalyMagnitude anomalies]
+        (eigenvalues, eigenvectors) = LA.eig matrix
+        principalComponents = take 3 $ LA.toColumns eigenvectors
+        jammingFrequencies = concatMap (V.toList . LA.scale sampleRate) principalComponents
     generateInterference (SpreadSpectrum jammingFrequencies) sampleRate duration
 
 -- | Generate spread spectrum interference

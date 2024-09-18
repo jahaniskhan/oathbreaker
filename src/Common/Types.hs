@@ -1,35 +1,50 @@
-module Common.Types
-    ( AcquisitionConfig(..)
-    , AcquisitionError(..)
-    , SignalSource(..)
-    , SimulatedSignalType(..)
-    ) where
+module Common.Types (
+    AcquisitionConfig(..),
+    SignalSource(..),
+    SimulatedSignal(..),
+    AcquisitionError(..),
+    Anomaly(..)
+) where
 
-import Data.Complex
+-- Removed unused import of Data.Complex
+-- If only instances are needed, import it as follows:
+import Data.Complex ()  -- Import instances only
 
-data SimulatedSignalType
-    = WhiteNoise
-    | Sine Double
-    | MultiTone [Double]
-    | QPSK Double
-    deriving (Show)
+--import Data.IORef (IORef)
+
+-- Define your data types here
+data AcquisitionConfig = AcquisitionConfig
+    { acqSource     :: SignalSource
+    , acqSampleRate :: Double
+    , acqDuration   :: Double
+    , acqCenterFreq :: Double
+    } deriving (Show, Eq)
 
 data SignalSource
-    = FileSource FilePath
-    | SDRSource String
-    | SimulatedSource SimulatedSignalType
-    deriving (Show)
+    = SDR
+    | Simulated SimulatedSignal
+    deriving (Show, Eq)
 
-data AcquisitionConfig = AcquisitionConfig
-    { acqSource :: SignalSource
-    , acqSampleRate :: Double
-    , acqCenterFreq :: Double
-    , acqGain :: Double
-    , acqNumSamples :: Int
-    } deriving (Show)
+data SimulatedSignal
+    = WhiteNoise
+    | Sine Double          -- Frequency
+    | MultiTone [Double]
+    | QPSK Double          -- Symbol Rate
+    deriving (Show, Eq)
 
 data AcquisitionError
     = SourceNotFound
     | InvalidConfig String
-    | HardwareError String
-    deriving (Show)
+    | ParsingFailed String
+    | InsufficientVariance
+    deriving (Show, Eq)
+
+data Anomaly = Anomaly
+    { anomalyFrequencyBin :: Int
+    , anomalyMagnitude    :: Double
+    , anomalyType         :: AnomalyType
+    , anomalyScore        :: Double
+    } deriving (Show, Eq)
+
+data AnomalyType = UnexpectedPeak | SignalDropout | NoiseBurst | SpectrumAnomaly | TimeFrequencyAnomaly
+    deriving (Show, Eq)

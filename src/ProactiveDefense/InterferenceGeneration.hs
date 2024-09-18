@@ -4,19 +4,19 @@ module ProactiveDefense.InterferenceGeneration
     ) where
 
 import Data.Complex
-import System.Random.MWC (Gen, createSystemRandom, uniformR)
+import System.Random.MWC (createSystemRandom, uniformR)
 import System.Random.MWC.Distributions (normal)
 import Control.Monad (replicateM)
-
+--import Control.Monad.IO.Class (liftIO)
 
 -- | Types of interference that can be generated
 data InterferenceType
     = WhiteNoise
-    | Tone Double  -- ^ Single frequency tone
-    | Sweep Double Double  -- ^ Frequency sweep from start to end frequency
-    | QAM Int Double  -- ^ QAM with specified order and symbol rate
-    | OFDM [Double]   -- ^ OFDM with specified subcarrier frequencies
-    | Chirp Double Double  -- ^ Chirp signal from start to end frequency
+    | Tone Double              -- ^ Single frequency tone
+    | Sweep Double Double      -- ^ Frequency sweep from start to end frequency
+    | QAM Int Double           -- ^ QAM with specified order and symbol rate
+    | OFDM [Double]            -- ^ OFDM with specified subcarrier frequencies
+    | Chirp Double Double      -- ^ Chirp signal from start to end frequency
     deriving (Show)
 
 -- | Generate an interference signal
@@ -26,16 +26,16 @@ generateInterference WhiteNoise sampleRate duration = do
     whiteNoise <- generateWhiteNoise numSamples
     return $ map (:+ 0) whiteNoise
 
-generateInterference (Tone frequency) sampleRate duration =
+generateInterference (Tone frequency) sampleRate duration = do
     let numSamples = floor (sampleRate * duration)
         t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
-    in return [cos (2 * pi * frequency * ti) :+ sin (2 * pi * frequency * ti) | ti <- t]
+    return [cos (2 * pi * frequency * ti) :+ sin (2 * pi * frequency * ti) | ti <- take numSamples t]
 
-generateInterference (Sweep startFreq endFreq) sampleRate duration =
+generateInterference (Sweep startFreq endFreq) sampleRate duration = do
     let numSamples = floor (sampleRate * duration)
         t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
-        freqs = [startFreq + (endFreq - startFreq) * ti / duration | ti <- t]
-    in return [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | (f, ti) <- zip freqs t]
+        freqs = [startFreq + (endFreq - startFreq) * ti / duration | ti <- take numSamples t]
+    return [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | (f, ti) <- zip freqs t]
 
 generateInterference (QAM order symbolRate) sampleRate duration = 
     generateQAM order symbolRate sampleRate duration
@@ -57,21 +57,32 @@ generateQAM :: Int -> Double -> Double -> Double -> IO [Complex Double]
 generateQAM order symbolRate sampleRate duration = do
     gen <- createSystemRandom
     let numSymbols = floor (duration * symbolRate)
-        symbolValues = [x :+ y | x <- [-1, 1], y <- [-1, 1]]  -- 4-QAM for simplicity
+        symbolValues = [ mkQAMSymbol order i | i <- [0 .. order - 1] ]
     symbols <- replicateM numSymbols (uniformR (0, length symbolValues - 1) gen)
     let qamSignal = [symbolValues !! s | s <- symbols]
-        interpolatedSignal = concat $ replicate (floor (sampleRate / symbolRate)) qamSignal
+        samplesPerSymbol = floor (sampleRate / symbolRate)
+        interpolatedSignal = concatMap (replicate samplesPerSymbol) qamSignal
     return $ take (floor (sampleRate * duration)) interpolatedSignal
+
+-- | Generate a QAM symbol given the order and symbol index
+mkQAMSymbol :: Int -> Int -> Complex Double
+mkQAMSymbol order idx =
+    let m = floor (sqrt (fromIntegral order :: Double)) :: Int
+        i = fromIntegral (idx `mod` m) - (fromIntegral m - 1) / 2
+        q = fromIntegral (idx `div` m) - (fromIntegral m - 1) / 2
+    in i :+ q
 
 -- | Generate OFDM signal
 generateOFDM :: [Double] -> Double -> Double -> IO [Complex Double]
 generateOFDM subcarriers sampleRate duration = do
-    let t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
-    return [sum [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | f <- subcarriers] | ti <- t]
+    let numSamples = floor (sampleRate * duration)
+        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+    return [sum [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | f <- subcarriers] | ti <- take numSamples t]
 
 -- | Generate Chirp signal
 generateChirp :: Double -> Double -> Double -> Double -> IO [Complex Double]
 generateChirp startFreq endFreq sampleRate duration = do
-    let t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+    let numSamples = floor (sampleRate * duration)
+        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
         k = (endFreq - startFreq) / duration
-    return [cos (2 * pi * (startFreq * ti + k * ti * ti / 2)) :+ sin (2 * pi * (startFreq * ti + k * ti * ti / 2)) | ti <- t]
+    return [cos (2 * pi * (startFreq * ti + k * ti * ti / 2)) :+ sin (2 * pi * (startFreq * ti + k * ti * ti / 2)) | ti <- take numSamples t]
