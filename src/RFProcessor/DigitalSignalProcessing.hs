@@ -1,78 +1,129 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
--- This line is a special instruction to the Haskell compiler. It allows us to automatically
--- derive certain properties for our custom data types, making it easier to work with them.
--- Author: Jahan Khan
-module SignalProcessing where
+
+module RFProcessor.DigitalSignalProcessing
+    ( Signal
+    , SignalMetadata(..)
+    , RFProcessorT(..)
+    , runRFProcessor
+    , applyFilter
+    , frequencyModulate
+    , frequencyDemodulate
+    , waveletTransform
+    , adaptiveFilter
+    ) where
 
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Complex
+import qualified Data.Vector.Storable as V
 
--- | Represents a signal as a list of complex numbers (I/Q data)
+-- Signal type (using Complex Double for I/Q data)
 type Signal = [Complex Double]
--- A signal is a list of complex numbers, which are used to represent both the real and imaginary parts of a signal.
 
--- | Metadata for our signal
+-- Metadata for our signal
 data SignalMetadata = SignalMetadata
-    { sampleRate :: Double       -- ^ Sampling rate in Hz
-    , centerFrequency :: Double  -- ^ Center frequency in Hz
-    , gain :: Double             -- ^ Signal gain
+    { sampleRate      :: Double
+    , centerFrequency :: Double
+    , gain            :: Double
     } deriving (Show)
--- This data structure holds information about the signal, such as how often it was sampled, its center frequency, and its gain.
 
--- | SignalT monad for managing signal metadata
-newtype SignalT m a = SignalT { runSignalT :: StateT SignalMetadata m a }
-    deriving (Functor, Applicative, Monad, MonadState SignalMetadata)
--- This is a special type that helps us manage the state of our signal processing operations. It's like a container that holds the state and the operation.
-
--- | RFProcessorT monad transformer for composable signal processing
-newtype RFProcessorT m a = RFProcessorT { runRFProcessorT :: ReaderT Signal (SignalT m) a }
+-- RFProcessorT monad for managing signal processing
+newtype RFProcessorT m a = RFProcessorT { runRFProcessorT :: ReaderT Signal (StateT SignalMetadata m) a }
     deriving (Functor, Applicative, Monad, MonadReader Signal, MonadState SignalMetadata)
--- This is another special type that helps us process signals in a composable way. It's like a container that holds the signal and the operation that processes the signal.
 
--- | Helper function to run RFProcessorT
--- 
--- @param processor The RFProcessorT to run
--- @param signal The input signal
--- @param metadata The initial metadata
--- @return A tuple of the result and final metadata
+-- Run the RFProcessor monad
 runRFProcessor :: Monad m => RFProcessorT m a -> Signal -> SignalMetadata -> m (a, SignalMetadata)
-runRFProcessor processor signal metadata = 
-    runStateT (runReaderT (runRFProcessorT processor) signal) metadata
--- This function is a helper to run our signal processing operations. It takes the operation, the signal, and the initial metadata, and returns the result and the final metadata.
+runRFProcessor (RFProcessorT action) signal metadata = 
+    runStateT (runReaderT action signal) metadata
 
--- | Amplify the signal by a given factor
--- 
--- @param factor The amplification factor
--- @return The amplified signal
-amplify :: Monad m => Double -> RFProcessorT m Signal
-amplify factor = do
+-- Apply a filter to the signal
+applyFilter :: Monad m => (Double -> Double) -> RFProcessorT m Signal
+applyFilter filterFunc = do
     signal <- ask
-    return $ map (* (factor :+ 0)) signal
--- This function amplifies the signal by a given factor. It asks for the current signal, multiplies each element by the factor, and returns the amplified signal.
-
--- | Perform a Discrete Fourier Transform on the signal
--- 
--- @return The transformed signal
-dft :: Monad m => RFProcessorT m Signal
-dft = do
-    signal <- ask
+    metadata <- get
     let n = length signal
-        k = [0..n-1]
-        omega = (-2 * pi) :+ 0
-    return [sum [x * exp((omega * fromIntegral (j*k)) / fromIntegral n) | (x, j) <- zip signal [0..]] | k <- k]
--- This function performs a Discrete Fourier Transform on the signal. It asks for the current signal, calculates the DFT, and returns the transformed signal.
+        freqs = [ fromIntegral i * sampleRate metadata / fromIntegral n | i <- [0 .. n - 1] ]
+        filteredSignal = zipWith (*) signal (map (:+ 0) (map filterFunc freqs))
+    return filteredSignal
 
--- | Update the signal metadata
--- 
--- @param f The function to update the metadata
-updateMetadata :: Monad m => (SignalMetadata -> SignalMetadata) -> RFProcessorT m ()
-updateMetadata f = RFProcessorT $ lift $ modify f
--- This function updates the metadata of the signal. It takes a function that modifies the metadata, and applies it to the current metadata.
+-- Frequency modulation
+frequencyModulate :: Monad m => Double -> RFProcessorT m Signal
+frequencyModulate carrierFreq = do
+    signal <- ask
+    metadata <- get
+    let sampleRateVal = sampleRate metadata
+        t = [ fromIntegral i / sampleRateVal | i <- [0 .. length signal - 1] ]
+        modulatedSignal = zipWith (\s ti -> s * exp (0 :+ (2 * pi * carrierFreq * ti))) signal t
+    return modulatedSignal
 
--- | Example of a more complex processing pipeline
-processSignal :: Monad m => RFProcessorT m Signal
-processSignal = do
-    amplify 2.0
-    updateMetadata (\md -> md { gain = gain md * 2.0 })
-    dft
+-- Frequency demodulation
+frequencyDemodulate :: Monad m => Double -> RFProcessorT m Signal
+frequencyDemodulate carrierFreq = do
+    signal <- ask
+    metadata <- get
+    let sampleRateVal = sampleRate metadata
+        t = [ fromIntegral i / sampleRateVal | i <- [0 .. length signal - 1] ]
+        demodulatedSignal = zipWith (\s ti -> s * exp (0 :+ (-2 * pi * carrierFreq * ti))) signal t
+    return demodulatedSignal
+
+-- | Perform wavelet transform
+waveletTransform :: Int -> [Complex Double] -> [Complex Double]
+waveletTransform level xs
+    | level <= 0 = xs
+    | otherwise =
+        let (evensList, oddsList) = unzip [(x, y) | ((i, x), (_, y)) <- zip (zip [(0::Int)..] xs) (zip [(1::Int)..] (drop 1 xs)), even i]
+            paired = zip evensList oddsList
+            averages = map (\(a, b) -> (a + b) / sqrt 2) paired
+            differences = map (\(a, b) -> (a - b) / sqrt 2) paired
+        in averages ++ differences
+
+-- | Adaptive filtering using LMS algorithm
+adaptiveFilter :: Int -> Double -> V.Vector (Complex Double) -> V.Vector (Complex Double)
+adaptiveFilter filterLength stepSize signal =
+    V.unfoldr go (V.replicate filterLength (0 :+ 0), signal)
+  where
+    go (weights, xs)
+      | V.null xs = Nothing
+      | otherwise =
+          let x = V.head xs
+              xVec = V.take filterLength (V.cons x xs)
+              (y, newWeights) = lms x xVec weights stepSize
+          in Just (y, (newWeights, V.tail xs))
+
+lms :: Complex Double -> V.Vector (Complex Double) -> V.Vector (Complex Double) -> Double -> (Complex Double, V.Vector (Complex Double))
+lms x xVec weights stepSize =
+    let y = V.sum $ V.zipWith (*) weights xVec
+        e = x - y
+        newWeights = V.zipWith (\w xi -> w + (stepSize :+ 0) * e * conjugate xi) weights xVec
+    in (y, newWeights)
+
+-- Commented out unused functions
+{-
+-- | Simple Discrete Wavelet Transform (Haar wavelet)
+dwt :: [Double] -> [Double]
+dwt [] = []
+dwt [x] = [x]
+dwt xs = 
+    let pairs = zip (evens xs) (odds xs)
+        averages = map (\(a, b) -> (a + b) / sqrt 2) pairs
+        differences = map (\(a, b) -> (a - b) / sqrt 2) pairs
+    in averages ++ differences
+  where
+    evens ys = map fst . filter (even . snd) $ zip ys [0 :: Int ..]
+    odds ys = map fst . filter (odd . snd) $ zip ys [0 :: Int ..]
+
+-- Add this simple wavelet transform function
+simpleWaveletTransform :: [Complex Double] -> [Complex Double]
+simpleWaveletTransform [] = []
+simpleWaveletTransform [x] = [x]
+simpleWaveletTransform xs =
+    let (evens, odds) = unzip $ zip (everyOther xs) (everyOther $ drop 1 xs)
+        averages = zipWith (\a b -> (a + b) / sqrt 2) evens odds
+        differences = zipWith (\a b -> (a - b) / sqrt 2) evens odds
+    in averages ++ differences
+
+everyOther :: [a] -> [a]
+everyOther [] = []
+everyOther (x:_:xs) = x : everyOther xs
+everyOther [x] = [x]
+-}

@@ -1,0 +1,9 @@
+packages: .
+
+constraints:
+  base >=4.17 && <5,
+  unix >=2.8.5.1 && <3.0,
+  os-string >=2.0.6 && <3.0,
+  filepath >=1.4.100.4 && <2.0,
+  hmatrix >=0.20.0.0 && <1.0
+  -- Add other constraints as necessary
