@@ -1,11 +1,11 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module RFProcessor.DigitalSignalProcessing
     ( Signal
     , SignalMetadata(..)
     , RFProcessorT(..)
     , runRFProcessor
-    , applyFilter
     , frequencyModulate
     , frequencyDemodulate
     , waveletTransform
@@ -15,115 +15,127 @@ module RFProcessor.DigitalSignalProcessing
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Complex
-import qualified Data.Vector.Storable as V
+import Utils.Wavelet (Wavelet(..), getWaveletFilterPair, WaveletError(..))
 
--- Signal type (using Complex Double for I/Q data)
+-- | Signal type (using Complex Double for I/Q data)
 type Signal = [Complex Double]
 
--- Metadata for our signal
+-- | Metadata for the signal
 data SignalMetadata = SignalMetadata
     { sampleRate      :: Double
     , centerFrequency :: Double
     , gain            :: Double
     } deriving (Show)
 
--- RFProcessorT monad for managing signal processing
+-- | RFProcessorT monad for managing signal processing
 newtype RFProcessorT m a = RFProcessorT { runRFProcessorT :: ReaderT Signal (StateT SignalMetadata m) a }
-    deriving (Functor, Applicative, Monad, MonadReader Signal, MonadState SignalMetadata)
+    deriving (Functor, Applicative, Monad, MonadReader Signal, MonadState SignalMetadata, MonadIO)
 
--- Run the RFProcessor monad
+-- | Run the RFProcessor monad
 runRFProcessor :: Monad m => RFProcessorT m a -> Signal -> SignalMetadata -> m (a, SignalMetadata)
-runRFProcessor (RFProcessorT action) signal metadata = 
+runRFProcessor (RFProcessorT action) signal metadata =
     runStateT (runReaderT action signal) metadata
 
--- Apply a filter to the signal
-applyFilter :: Monad m => (Double -> Double) -> RFProcessorT m Signal
-applyFilter filterFunc = do
-    signal <- ask
-    metadata <- get
-    let n = length signal
-        freqs = [ fromIntegral i * sampleRate metadata / fromIntegral n | i <- [0 .. n - 1] ]
-        filteredSignal = zipWith (*) signal (map (:+ 0) (map filterFunc freqs))
-    return filteredSignal
-
--- Frequency modulation
-frequencyModulate :: Monad m => Double -> RFProcessorT m Signal
+-- | Frequency modulation of the signal
+frequencyModulate :: Double                  -- ^ Carrier frequency in Hz
+                  -> RFProcessorT IO Signal  -- ^ Modulated signal
 frequencyModulate carrierFreq = do
     signal <- ask
     metadata <- get
-    let sampleRateVal = sampleRate metadata
-        t = [ fromIntegral i / sampleRateVal | i <- [0 .. length signal - 1] ]
-        modulatedSignal = zipWith (\s ti -> s * exp (0 :+ (2 * pi * carrierFreq * ti))) signal t
+    let samplePeriod = 1 / sampleRate metadata
+        times = [n * samplePeriod | n <- [0..fromIntegral (length signal - 1)]]
+        modulatedSignal = zipWith (\s t -> s * cis (2 * pi * carrierFreq * t)) signal times
     return modulatedSignal
 
--- Frequency demodulation
-frequencyDemodulate :: Monad m => Double -> RFProcessorT m Signal
+-- | Frequency demodulation of the signal
+frequencyDemodulate :: Double                  -- ^ Carrier frequency in Hz
+                    -> RFProcessorT IO Signal  -- ^ Demodulated signal
 frequencyDemodulate carrierFreq = do
     signal <- ask
     metadata <- get
-    let sampleRateVal = sampleRate metadata
-        t = [ fromIntegral i / sampleRateVal | i <- [0 .. length signal - 1] ]
-        demodulatedSignal = zipWith (\s ti -> s * exp (0 :+ (-2 * pi * carrierFreq * ti))) signal t
+    let samplePeriod = 1 / sampleRate metadata
+        times = [n * samplePeriod | n <- [0..fromIntegral (length signal - 1)]]
+        demodulatedSignal = zipWith (\s t -> s * cis (-2 * pi * carrierFreq * t)) signal times
     return demodulatedSignal
 
--- | Perform wavelet transform
-waveletTransform :: Int -> [Complex Double] -> [Complex Double]
-waveletTransform level xs
-    | level <= 0 = xs
-    | otherwise =
-        let (evensList, oddsList) = unzip [(x, y) | ((i, x), (_, y)) <- zip (zip [(0::Int)..] xs) (zip [(1::Int)..] (drop 1 xs)), even i]
-            paired = zip evensList oddsList
-            averages = map (\(a, b) -> (a + b) / sqrt 2) paired
-            differences = map (\(a, b) -> (a - b) / sqrt 2) paired
-        in averages ++ differences
+-- | Perform wavelet transform using specified wavelet and level
+waveletTransform :: Wavelet
+                 -> Int
+                 -> RFProcessorT IO (Either WaveletError ([Double], [Double]))
+waveletTransform wavelet level = do
+    signal <- ask
+    let realSignal = map realPart signal
+        imagSignal = map imagPart signal
+    case getWaveletFilterPair wavelet of
+        Left err -> return $ Left err
+        Right (lowPass, highPass) -> do
+            let (transformedReal, detailReal) = multiLevelDWT realSignal level lowPass highPass
+                (transformedImag, detailImag) = multiLevelDWT imagSignal level lowPass highPass
+                transformed = zipWith (+) transformedReal transformedImag
+                detailCoeffs = zipWith (+) detailReal detailImag
+            return $ Right (transformed, detailCoeffs)
 
--- | Adaptive filtering using LMS algorithm
-adaptiveFilter :: Int -> Double -> V.Vector (Complex Double) -> V.Vector (Complex Double)
-adaptiveFilter filterLength stepSize signal =
-    V.unfoldr go (V.replicate filterLength (0 :+ 0), signal)
+-- | Multi-level DWT implementation
+multiLevelDWT :: [Double]               -- ^ Input signal
+              -> Int                    -- ^ Decomposition level
+              -> [Double]               -- ^ Low-pass filter coefficients
+              -> [Double]               -- ^ High-pass filter coefficients
+              -> ([Double], [Double])   -- ^ (Approximation, Details)
+multiLevelDWT signal level lowPass highPass = go signal level []
   where
-    go (weights, xs)
-      | V.null xs = Nothing
-      | otherwise =
-          let x = V.head xs
-              xVec = V.take filterLength (V.cons x xs)
-              (y, newWeights) = lms x xVec weights stepSize
-          in Just (y, (newWeights, V.tail xs))
+    go s 0 detailCoeffs = (s, concat (reverse detailCoeffs))
+    go s l detailCoeffs =
+      let (a, d) = dwt s lowPass highPass
+      in go a (l - 1) (d : detailCoeffs)
 
-lms :: Complex Double -> V.Vector (Complex Double) -> V.Vector (Complex Double) -> Double -> (Complex Double, V.Vector (Complex Double))
-lms x xVec weights stepSize =
-    let y = V.sum $ V.zipWith (*) weights xVec
-        e = x - y
-        newWeights = V.zipWith (\w xi -> w + (stepSize :+ 0) * e * conjugate xi) weights xVec
-    in (y, newWeights)
-
--- Commented out unused functions
-{-
--- | Simple Discrete Wavelet Transform (Haar wavelet)
-dwt :: [Double] -> [Double]
-dwt [] = []
-dwt [x] = [x]
-dwt xs = 
-    let pairs = zip (evens xs) (odds xs)
-        averages = map (\(a, b) -> (a + b) / sqrt 2) pairs
-        differences = map (\(a, b) -> (a - b) / sqrt 2) pairs
-    in averages ++ differences
+-- | Single level DWT using specified wavelet filters
+dwt :: [Double]         -- ^ Input signal
+    -> [Double]         -- ^ Low-pass filter coefficients
+    -> [Double]         -- ^ High-pass filter coefficients
+    -> ([Double], [Double]) -- ^ (Approximation, Detail)
+dwt signal lowPassFilter highPassFilter = (approximation, detail)
   where
-    evens ys = map fst . filter (even . snd) $ zip ys [0 :: Int ..]
-    odds ys = map fst . filter (odd . snd) $ zip ys [0 :: Int ..]
+    approximation = downsample $ convolve signal lowPassFilter
+    detail        = downsample $ convolve signal highPassFilter
 
--- Add this simple wavelet transform function
-simpleWaveletTransform :: [Complex Double] -> [Complex Double]
-simpleWaveletTransform [] = []
-simpleWaveletTransform [x] = [x]
-simpleWaveletTransform xs =
-    let (evens, odds) = unzip $ zip (everyOther xs) (everyOther $ drop 1 xs)
-        averages = zipWith (\a b -> (a + b) / sqrt 2) evens odds
-        differences = zipWith (\a b -> (a - b) / sqrt 2) evens odds
-    in averages ++ differences
+-- | Convolution operation
+convolve :: [Double] -> [Double] -> [Double]
+convolve xs hs = [ sum $ zipWith (*) (take (length hs) (drop n xs ++ repeat 0)) hsRev | n <- [0..length xs - 1] ]
+  where
+    hsRev = reverse hs
 
-everyOther :: [a] -> [a]
-everyOther [] = []
-everyOther (x:_:xs) = x : everyOther xs
-everyOther [x] = [x]
--}
+-- | Downsample by taking every other sample
+downsample :: [Double] -> [Double]
+downsample [] = []
+downsample (x:xs) = x : case xs of
+    (_:rest) -> downsample rest
+    []       -> []
+
+-- | Adaptive filter implementation using Least Mean Squares (LMS) algorithm
+adaptiveFilter :: Signal     -- ^ Desired signal
+               -> Double     -- ^ Learning rate (mu)
+               -> Int        -- ^ Filter order
+               -> RFProcessorT IO Signal
+adaptiveFilter desired mu order = do
+    signal <- ask
+    let lms :: [Double] -> [Complex Double] -> [Complex Double] -> [Complex Double] -> [Complex Double] -> [Complex Double]
+        lms coeffs [] [] _ output = output
+        lms coeffs (x:xs) [] history output =
+            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
+                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart y))) (map realPart history))
+            in lms coeffs' xs [] (x : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
+        lms coeffs [] (d:ds) history output = 
+            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
+                e = d - y
+                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart e))) (map realPart history))
+            in lms coeffs' [] ds ((0 :+ 0) : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
+        lms coeffs (x:xs) (d:ds) history output =
+            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
+                e = d - y
+                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart e))) (map realPart history))
+            in lms coeffs' xs ds (x : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
+        paddedInput = replicate order (0 :+ 0) ++ signal
+        desiredPadded = replicate order (0 :+ 0) ++ desired
+        coeffsInit = replicate order 0
+        historyInit = replicate order (0 :+ 0)
+    return $ reverse $ lms coeffsInit paddedInput desiredPadded historyInit []

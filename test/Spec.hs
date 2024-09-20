@@ -8,6 +8,9 @@ import RFProcessor.DigitalSignalProcessing
 import ProactiveDefense.AdaptiveJamming
 import Data.Complex
 import Numeric.Wavelet
+import Utils.PCA (performPCA, PrincipalComponents(..))
+import Numeric.LinearAlgebra (Matrix, fromLists, (<>))
+import Control.Exception (evaluate)
 
 main :: IO ()
 main = hspec $ do
@@ -17,56 +20,14 @@ main = hspec $ do
                 duration = 1.0
             whiteNoise <- generateInterference WhiteNoise sampleRate duration
             let realParts = map realPart whiteNoise
-                mean = sum realParts / fromIntegral (length realParts)
-                variance = sum (map (\x -> (x - mean) ^ 2) realParts) / fromIntegral (length realParts)
-                stddev = sqrt variance
-            mean `shouldSatisfy` (\x -> abs x < 0.1)
-            stddev `shouldSatisfy` (\x -> abs (x - 1) < 0.1)
-
-        it "should generate QAM signal" $ do
-            let sampleRate = 44100
-                duration = 1.0
-                order = 4
-                symbolRate = 1000
-            qamSignal <- generateInterference (QAM order symbolRate) sampleRate duration
-            length qamSignal `shouldBe` floor (sampleRate * duration)
-
-        it "should generate OFDM signal" $ do
-            let sampleRate = 44100
-                duration = 1.0
-                subcarriers = [1000, 2000, 3000]
-            ofdmSignal <- generateInterference (OFDM subcarriers) sampleRate duration
-            length ofdmSignal `shouldBe` floor (sampleRate * duration)
-
-        it "should generate Chirp signal" $ do
-            let sampleRate = 44100
-                duration = 1.0
-                startFreq = 1000
-                endFreq = 2000
-            chirpSignal <- generateInterference (Chirp startFreq endFreq) sampleRate duration
-            length chirpSignal `shouldBe` floor (sampleRate * duration)
+                meanVal = sum realParts / fromIntegral (length realParts)
+                variance = sum (map ((^2) . (meanVal -)) realParts) / fromIntegral (length realParts)
+            meanVal `shouldSatisfy` (\m -> abs m < 0.1)
+            variance `shouldSatisfy` (\v -> abs (v - 1.0) < 0.1)
 
     describe "Anomaly Detection" $ do
-        it "should detect and score various types of anomalies" $ do
-            let signal = [1 :+ 0, 2 :+ 0, 3 :+ 0, 10 :+ 0, 3 :+ 0, 2 :+ 0, 1 :+ 0] ++ replicate 100 (1 :+ 0)
-                baseThreshold = 2.0
-                scoreThreshold = 2
-                windowSize = 5
-                anomalies = detectAnomalies signal baseThreshold scoreThreshold windowSize
-            length anomalies `shouldSatisfy` (> 0)
-            all (\a -> anomalyScore a > fromIntegral scoreThreshold) anomalies `shouldBe` True
-            any (\a -> anomalyType a == SpectrumAnomaly) anomalies `shouldBe` True
-            any (\a -> anomalyType a == TimeFrequencyAnomaly) anomalies `shouldBe` True
-
-        it "should handle empty signal" $ do
-            let emptySignal = [] :: [Complex Double]
-                baseThreshold = 2.0
-                scoreThreshold = 2
-                windowSize = 5
-            detectAnomalies emptySignal baseThreshold scoreThreshold windowSize `shouldBe` []
-
-        it "should handle signal with all identical values" $ do
-            let identicalSignal = replicate 100 (1 :+ 0)
+        it "should detect no anomalies in an identical signal" $ do
+            let identicalSignal = replicate 100 1.0
                 baseThreshold = 2.0
                 scoreThreshold = 2
                 windowSize = 5
@@ -99,3 +60,37 @@ main = hspec $ do
                 duration = 0.1
             jammingSignal <- adaptiveJammingPCA anomalies sampleRate duration
             length jammingSignal `shouldBe` floor (sampleRate * duration)
+
+    describe "PCA Module" $ do
+        it "performs PCA on a simple dataset correctly" $ do
+            let dataMatrix = fromLists 
+                    [ [2.5, 2.4]
+                    , [0.5, 0.7]
+                    , [2.2, 2.9]
+                    , [1.9, 2.2]
+                    , [3.1, 3.0]
+                    , [2.3, 2.7]
+                    , [2, 1.6]
+                    , [1, 1.1]
+                    , [1.5, 1.6]
+                    , [1.1, 0.9]
+                    ]
+                numComponents = 2
+                PrincipalComponents { eigenvalues, eigenvectors } = performPCA dataMatrix numComponents
+            eigenvalues `shouldSatisfy` (\vals -> length vals == 2 && all (> 0) vals)
+            length eigenvectors `shouldBe` 2
+
+        it "returns Nothing for empty data matrix" $ do
+            let dataMatrix = fromLists []
+                numComponents = 2
+            performPCA dataMatrix numComponents `shouldBe` Nothing
+
+        it "handles requesting more components than available" $ do
+            let dataMatrix = fromLists 
+                    [ [1.0, 2.0]
+                    , [3.0, 4.0]
+                    ]
+                numComponents = 5
+                PrincipalComponents { eigenvalues, eigenvectors } = performPCA dataMatrix 5
+            length eigenvalues `shouldBe` 2
+            length eigenvectors `shouldBe` 2

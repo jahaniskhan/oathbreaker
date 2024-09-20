@@ -19,8 +19,8 @@ median xs
 
 -- | Calculate the Median Absolute Deviation (MAD) of a list.
 -- MAD is a robust measure of statistical dispersion.
-medianAbsoluteDeviation :: [Double] -> Double
-medianAbsoluteDeviation xs =
-    let med        = median xs
-        deviations = map (\x -> abs (x - med)) xs
-    in median deviations
+medianAbsoluteDeviation :: [Double] -> Maybe Double
+medianAbsoluteDeviation xs = do
+    med <- median xs
+    let deviations = map (abs . ( - med)) xs
+    median deviations
