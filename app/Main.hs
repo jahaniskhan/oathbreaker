@@ -2,32 +2,30 @@
 
 module Main where
 
-import ProactiveDefense.InterferenceGeneration
 import ProactiveDefense.AdaptiveJamming
 import ThreatDetection.AnomalyDetection
-import ThreatDetection.SignatureMatching
 import RFProcessor.DigitalSignalProcessing
-import RFProcessor.SpectralAnalysis
 import RFProcessor.SignalAcquisition
 import Utils.DataStructures
 
-import Data.Complex
--- import qualified Data.Vector as V  -- Not used in this module
+import Data.Complex (Complex, magnitude)
+import qualified Data.Vector.Storable as V
 import Graphics.Rendering.Chart.Easy
 import Graphics.Rendering.Chart.Backend.Diagrams
 import Data.Time
 import System.Directory (createDirectoryIfMissing)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Control.Monad (forM_)
 
 main :: IO ()
 main = do
     currentTime <- getCurrentTime
     let simulationId = formatTime defaultTimeLocale "%Y%m%d_%H%M%S" currentTime
     createDirectoryIfMissing True $ "simulations/" ++ simulationId
-    
+
     putStrLn $ "Starting RF Simulation " ++ simulationId
-    
+
     -- Simulation parameters
     let sampleRate = 1000 :: Double
         duration = 1 :: Double
@@ -41,12 +39,12 @@ main = do
             , acqDuration = duration
             , acqCenterFreq = centerFreq
             }
-    
+
     signalResult <- acquireSignal acquisitionConfig
     case signalResult of
         Left err -> do
             putStrLn $ "Error acquiring signal: " ++ show err
-            logError $ "Signal acquisition failed: " ++ show err
+            -- logError $ "Signal acquisition failed: " ++ show err
         Right acquiredSignal -> do
             putStrLn "Signal acquired successfully"
 
@@ -62,49 +60,44 @@ main = do
             putStrLn "Detecting anomalies..."
             let baseThreshold = 2.0
                 scoreThreshold = 5
-                windowSize = 10
-                anomalies = detectAnomalies processedSignal baseThreshold scoreThreshold windowSize
-
-            -- Match signatures
-            putStrLn "Matching signatures..."
-            let knownSignatures = [Signature "Test Tone" (take 100 acquiredSignal)]
-                matches = matchSignatures knownSignatures processedSignal
+                windowSize = 128
+                hopSize = 64
+                anomalies = detectAnomalies (V.toList processedSignal) baseThreshold scoreThreshold windowSize hopSize sampleRate
 
             -- Generate jamming signal
             putStrLn "Generating adaptive jamming signal..."
-            jammingSignal <- adaptiveJammingPCA anomalies sampleRate duration
+            jammingSignalResult <- adaptiveJammingPCA 2 anomalies sampleRate duration
+            case jammingSignalResult of
+                Left err -> putStrLn $ "Error generating jamming signal: " ++ err
+                Right jammingSignal -> do
+                    -- Log results
+                    let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
+                    TIO.writeFile logFile $ T.unlines
+                        [ "Simulation ID: " <> T.pack simulationId
+                        , "Sample Rate: " <> T.pack (show sampleRate) <> " Hz"
+                        , "Duration: " <> T.pack (show duration) <> " s"
+                        , "Center Frequency: " <> T.pack (show centerFreq) <> " Hz"
+                        , "Detected Anomalies: " <> T.pack (show (length anomalies))
+                        , "Jamming Signal Length: " <> T.pack (show (length jammingSignal))
+                        , "\nDetailed Anomalies:"
+                        , T.unlines $ map (T.pack . show) anomalies
+                        ]
 
-            -- Log results
-            let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
-            TIO.writeFile logFile $ T.unlines
-                [ "Simulation ID: " <> T.pack simulationId
-                , "Sample Rate: " <> T.pack (show sampleRate) <> " Hz"
-                , "Duration: " <> T.pack (show duration) <> " s"
-                , "Center Frequency: " <> T.pack (show centerFreq) <> " Hz"
-                , "Detected Anomalies: " <> T.pack (show (length anomalies))
-                , "Signature Matches: " <> T.pack (show (length matches))
-                , "Jamming Signal Length: " <> T.pack (show (length jammingSignal))
-                , "\nDetailed Anomalies:"
-                , T.unlines $ map (T.pack . show) anomalies
-                , "\nDetailed Matches:"
-                , T.unlines $ map (T.pack . show) matches
-                ]
+                    putStrLn $ "Results logged to " ++ logFile
 
-            putStrLn $ "Results logged to " ++ logFile
-
-            -- Visualize signals
-            putStrLn "Generating visualizations..."
-            let plotFile = "simulations/" ++ simulationId ++ "/signal_plot.svg"
-            plotSignals plotFile [("Acquired Signal", acquiredSignal),
-                                  ("Processed Signal", processedSignal),
-                                  ("Jamming Signal", jammingSignal)]
-
-            putStrLn $ "Signal plot saved to " ++ plotFile
-            putStrLn "Simulation complete."
+                    -- Visualize signals
+                    putStrLn "Generating visualizations..."
+                    let plotFile = "simulations/" ++ simulationId ++ "/signal_plot.svg"
+                    plotSignals plotFile [ ("Acquired Signal", V.toList acquiredSignal)
+                                         , ("Processed Signal", V.toList processedSignal)
+                                         , ("Jamming Signal", jammingSignal)
+                                         ]
+                    putStrLn $ "Signal plot saved to " ++ plotFile
+                    putStrLn "Simulation complete."
 
 -- Helper function for low-pass filter
 lowPassFilter :: Double -> Double -> Double
-lowPassFilter cutoff f = if f < cutoff then 1 else 0
+lowPassFilter cutoff f = if abs f < cutoff then 1 else 0
 
 -- Function to plot signals
 plotSignals :: FilePath -> [(String, [Complex Double])] -> IO ()
@@ -116,4 +109,3 @@ plotSignals filename signals = do
             forM_ signals $ \(name, signal) -> do
                 plot (line name [[(x, magnitude y) | (x, y) <- zip [0..] signal]])
     renderableToFile def filename chart
-

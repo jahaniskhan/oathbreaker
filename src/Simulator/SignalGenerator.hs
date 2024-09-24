@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Simulator.SignalGenerator
     ( generateBaseSignal
     , injectSignature
@@ -9,7 +11,7 @@ module Simulator.SignalGenerator
     , InterferenceType(..)
     , Signature(..)
     , AnomalyPattern(..)
-    , Signal(..)  -- Exporting the Signal data type
+    , Signal(..)
     ) where
 
 import Data.Complex (Complex(..), cis)
@@ -18,13 +20,12 @@ import System.Random.MWC (createSystemRandom, uniformR)
 import System.Random.MWC.Distributions (normal)
 import Control.Monad (replicateM, foldM)
 import Data.List (splitAt)
-import Data.Bifunctor (first)
 import qualified Data.Vector.Storable as V
 
 -- | Represents a signal with metadata
 data Signal = Signal
-    { sampleRate :: Double             -- ^ Sample rate in Hz
-    , samples    :: V.Vector (Complex Double) -- ^ Signal samples
+    { sampleRate :: Double
+    , samples    :: V.Vector (Complex Double)
     } deriving (Show, Eq)
 
 -- | Represents a known signal signature
@@ -53,94 +54,95 @@ data InterferenceType
 -- | Generates a base signal, e.g., a sine wave with given frequency and sample rate.
 generateBaseSignal :: Int        -- ^ Number of samples
                   -> Double     -- ^ Frequency in Hz
-                  -> Double     -- ^ Sample rate in Hz
+                  -> Double     -- ^ Base sample rate in Hz
                   -> Signal
-generateBaseSignal sampleCount frequency sampleRate =
-    let signalSamples = [ cis (2 * pi * frequency * t / sampleRate) | t <- [0..fromIntegral sampleCount - 1] ]
-    in Signal sampleRate (V.fromList signalSamples)
+generateBaseSignal sampleCount frequency baseSampleRate =
+    let signalSamples = [ cis (2 * pi * frequency * t / baseSampleRate) | t <- [0..fromIntegral sampleCount - 1] ]
+    in Signal baseSampleRate (V.fromList signalSamples)
 
 -- | Injects a known signature into the signal at a specified position.
-injectSignature :: [Complex Double]    -- ^ Signature pattern
-                -> Int                  -- ^ Position to inject the signature
-                -> V.Vector (Complex Double)     -- ^ Original signal
-                -> V.Vector (Complex Double)     -- ^ Signal with injected signature
+injectSignature :: [Complex Double]          -- ^ Signature pattern
+                -> Int                        -- ^ Position to inject the signature
+                -> V.Vector (Complex Double)  -- ^ Original signal
+                -> V.Vector (Complex Double)  -- ^ Signal with injected signature
 injectSignature signature pos signal =
     let (before, after) = V.splitAt pos signal
         signatureVector = V.fromList signature
     in before V.++ signatureVector V.++ V.drop (pos + V.length signatureVector) after
 
 -- | Injects an anomaly into the signal.
-injectAnomaly :: [Complex Double]    -- ^ Anomaly pattern
-              -> Int                  -- ^ Position to inject the anomaly
-              -> V.Vector (Complex Double)     -- ^ Original signal
-              -> V.Vector (Complex Double)     -- ^ Signal with injected anomaly
+injectAnomaly :: [Complex Double] -> Int -> V.Vector (Complex Double) -> V.Vector (Complex Double)
 injectAnomaly anomaly pos signal =
     let (before, after) = V.splitAt pos signal
         anomalyVector = V.fromList anomaly
     in before V.++ anomalyVector V.++ V.drop (pos + V.length anomalyVector) after
 
 -- | Generates random white noise to be added to the signal.
-generateWhiteNoise :: Int        -- ^ Number of samples
-                   -> Double     -- ^ Noise amplitude
+generateWhiteNoise :: Int                        -- ^ Number of samples
+                   -> Double                     -- ^ Noise amplitude
                    -> IO (V.Vector (Complex Double))
-generateWhiteNoise numSamples amplitude = do
+generateWhiteNoise numSamples noiseAmplitude = do
     gen <- createSystemRandom
     noiseList <- replicateM numSamples $ do
-        realPart <- normal 0 (amplitude / sqrt 2) gen
-        imagPart <- normal 0 (amplitude / sqrt 2) gen
+        realPart <- normal 0 (noiseAmplitude / sqrt 2) gen
+        imagPart <- normal 0 (noiseAmplitude / sqrt 2) gen
         return (realPart :+ imagPart)
     return $ V.fromList noiseList
 
 -- | Combines base signal with noise.
-addNoise :: V.Vector (Complex Double)  -- ^ Base signal
-         -> V.Vector (Complex Double)  -- ^ Noise
+addNoise :: V.Vector (Complex Double)    -- ^ Base signal
+         -> V.Vector (Complex Double)    -- ^ Noise
          -> V.Vector (Complex Double)
 addNoise = V.zipWith (+)
 
 -- | Generates an interference signal based on the specified InterferenceType.
-generateInterference :: InterferenceType -- ^ Type of interference to generate
-                     -> Double           -- ^ Sample rate in Hz
-                     -> Double           -- ^ Duration in seconds
+generateInterference :: InterferenceType           -- ^ Type of interference to generate
+                     -> Double                     -- ^ Interference sample rate in Hz
+                     -> Double                     -- ^ Duration in seconds
                      -> IO (V.Vector (Complex Double))
-generateInterference WhiteNoise sampleRate duration = do
-    let numSamples = floor (sampleRate * duration)
+generateInterference WhiteNoise interferenceSampleRate duration = do
+    let numSamples = floor (interferenceSampleRate * duration)
     whiteNoise <- generateWhiteNoise numSamples 1.0
     return whiteNoise
 
-generateInterference (Tone frequency) sampleRate duration = do
-    let numSamples = floor (sampleRate * duration)
-        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+generateInterference (Tone frequency) interferenceSampleRate duration = do
+    let numSamples = floor (interferenceSampleRate * duration)
+        t = [0, 1 / interferenceSampleRate .. duration - 1 / interferenceSampleRate]
     return $ V.fromList [cos (2 * pi * frequency * ti) :+ 0 | ti <- take numSamples t]
 
-generateInterference (Sweep startFreq endFreq) sampleRate duration = do
-    let numSamples = floor (sampleRate * duration)
-        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+generateInterference (Sweep startFreq endFreq) interferenceSampleRate duration = do
+    let numSamples = floor (interferenceSampleRate * duration)
+        t = [0, 1 / interferenceSampleRate .. duration - 1 / interferenceSampleRate]
         freqs = [startFreq + (endFreq - startFreq) * ti / duration | ti <- take numSamples t]
     return $ V.fromList [cos (2 * pi * f * ti) :+ 0 | (f, ti) <- zip freqs t]
 
-generateInterference (QAM order symbolRate) sampleRate duration = 
-    generateQAM order symbolRate sampleRate duration
+generateInterference (QAM order symbolRate) interferenceSampleRate duration = 
+    generateQAM order symbolRate interferenceSampleRate duration
 
-generateInterference (OFDM subcarriers) sampleRate duration = 
-    generateOFDM subcarriers sampleRate duration
+generateInterference (OFDM subcarriers) interferenceSampleRate duration = 
+    generateOFDM subcarriers interferenceSampleRate duration
 
-generateInterference (Chirp startFreq endFreq) sampleRate duration = 
-    generateChirp startFreq endFreq sampleRate duration
+generateInterference (Chirp startFreq endFreq) interferenceSampleRate duration = 
+    generateChirp startFreq endFreq interferenceSampleRate duration
 
-generateInterference (SpreadSpectrum freqs) sampleRate duration = 
-    generateSpreadSpectrum freqs sampleRate duration
+generateInterference (SpreadSpectrum freqs) interferenceSampleRate duration = 
+    generateSpreadSpectrum freqs interferenceSampleRate duration
 
 -- | Generate QAM signal
-generateQAM :: Int -> Double -> Double -> Double -> IO (V.Vector (Complex Double))
-generateQAM order symbolRate sampleRate duration = do
+generateQAM :: Int                         -- ^ QAM order
+            -> Double                      -- ^ Symbol rate in symbols per second
+            -> Double                      -- ^ QAM sample rate in Hz
+            -> Double                      -- ^ Duration in seconds
+            -> IO (V.Vector (Complex Double))
+generateQAM order symbolRate qamSampleRate duration = do
     gen <- createSystemRandom
     let numSymbols = floor (duration * symbolRate)
         symbolValues = [ mkQAMSymbol order i | i <- [0 .. order - 1] ]
     symbols <- replicateM numSymbols (uniformR (0, length symbolValues - 1) gen)
     let qamSignal = [symbolValues !! s | s <- symbols]
-        samplesPerSymbol = floor (sampleRate / symbolRate)
+        samplesPerSymbol = floor (qamSampleRate / symbolRate)
         interpolatedSignal = concatMap (replicate samplesPerSymbol) qamSignal
-    return $ V.fromList $ take (floor (sampleRate * duration)) interpolatedSignal
+    return $ V.fromList $ take (floor (qamSampleRate * duration)) interpolatedSignal
 
 -- | Generate a QAM symbol given the order and symbol index
 mkQAMSymbol :: Int -> Int -> Complex Double
@@ -151,38 +153,50 @@ mkQAMSymbol order idx =
     in i :+ q
 
 -- | Generate OFDM signal
-generateOFDM :: [Double] -> Double -> Double -> IO (V.Vector (Complex Double))
-generateOFDM subcarriers sampleRate duration = do
-    let numSamples = floor (sampleRate * duration)
-        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+generateOFDM :: [Double]                  -- ^ Subcarrier frequencies
+             -> Double                    -- ^ OFDM sample rate in Hz
+             -> Double                    -- ^ Duration in seconds
+             -> IO (V.Vector (Complex Double))
+generateOFDM subcarriers ofdmSampleRate duration = do
+    let numSamples = floor (ofdmSampleRate * duration)
+        t = [0, 1 / ofdmSampleRate .. duration - 1 / ofdmSampleRate]
     return $ V.fromList [sum [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | f <- subcarriers] | ti <- take numSamples t]
 
 -- | Generate Chirp signal
-generateChirp :: Double -> Double -> Double -> Double -> IO (V.Vector (Complex Double))
-generateChirp startFreq endFreq sampleRate duration = do
-    let numSamples = floor (sampleRate * duration)
-        t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+generateChirp :: Double                   -- ^ Start frequency in Hz
+              -> Double                   -- ^ End frequency in Hz
+              -> Double                   -- ^ Chirp sample rate in Hz
+              -> Double                   -- ^ Duration in seconds
+              -> IO (V.Vector (Complex Double))
+generateChirp startFreq endFreq chirpSampleRate duration = do
+    let numSamples = floor (chirpSampleRate * duration)
+        t = [0, 1 / chirpSampleRate .. duration - 1 / chirpSampleRate]
         k = (endFreq - startFreq) / duration
     return $ V.fromList [cos (2 * pi * (startFreq * ti + k * ti * ti / 2)) :+ sin (2 * pi * (startFreq * ti + k * ti * ti / 2)) | ti <- take numSamples t]
 
 -- | Generate Spread Spectrum interference
-generateSpreadSpectrum :: [Double] -> Double -> Double -> IO (V.Vector (Complex Double))
-generateSpreadSpectrum freqs sampleRate duration = do
-    let t = [0, 1 / sampleRate .. duration - 1 / sampleRate]
+generateSpreadSpectrum :: [Double]                  -- ^ Spread Spectrum frequencies
+                       -> Double                    -- ^ Spread Spectrum sample rate in Hz
+                       -> Double                    -- ^ Duration in seconds
+                       -> IO (V.Vector (Complex Double))
+generateSpreadSpectrum freqs spreadSampleRate duration = do
+    let t = [0, 1 / spreadSampleRate .. duration - 1 / spreadSampleRate]
     return $ V.fromList [sum [cos (2 * pi * f * ti) :+ sin (2 * pi * f * ti) | f <- freqs] | ti <- t]
 
 -- | Generates a composite signal with multiple signatures and anomalies.
-generateCompositeSignal :: Int                -- ^ Number of samples
-                        -> Double             -- ^ Base frequency
-                        -> Double             -- ^ Sample rate
-                        -> [Signature]        -- ^ List of signatures to inject
-                        -> [AnomalyPattern]   -- ^ List of anomalies to inject
-                        -> Double             -- ^ Noise amplitude
+generateCompositeSignal :: Int                      -- ^ Number of samples
+                        -> Double                   -- ^ Base frequency in Hz
+                        -> Double                   -- ^ Base sample rate in Hz
+                        -> [Signature]              -- ^ List of signatures to inject
+                        -> [AnomalyPattern]         -- ^ List of anomalies to inject
+                        -> Double                   -- ^ Noise amplitude
                         -> IO Signal
-generateCompositeSignal sampleCount baseFreq sampleRate signatures anomalies noiseAmp = do
-    let baseSignal = generateBaseSignal sampleCount baseFreq sampleRate
+generateCompositeSignal sampleCount baseFreq baseSampleRate signatures anomalies noiseAmp = do
+    let baseSignal = generateBaseSignal sampleCount baseFreq baseSampleRate
     noise <- generateWhiteNoise sampleCount noiseAmp
     let noisySignal = addNoise (samples baseSignal) noise
+    -- Inject all signatures at position 500 (you might want to vary this)
     signalWithSignatures <- foldM (\sig s -> return $ injectSignature (signaturePattern s) 500 sig) noisySignal signatures
+    -- Inject all anomalies
     let finalSignal = foldl (\sig a -> injectAnomaly (anomalyPattern a) (anomalyPos a) sig) signalWithSignatures anomalies
-    return $ Signal sampleRate finalSignal
+    return $ Signal baseSampleRate finalSignal

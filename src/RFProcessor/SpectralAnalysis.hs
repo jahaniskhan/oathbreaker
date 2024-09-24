@@ -25,8 +25,9 @@ calculatePowerSpectralDensity signal =
     let vectorSignal = fromList signal                                -- Convert list to Vector
         windowedSignal = hannWindow vectorSignal                      -- Apply Hann window
         fftResult = fft windowedSignal                                -- Perform FFT
-        magnitudes = cmap magnitude fftResult                         -- Magnitude of FFT result
-        psd = toList $ cmap (\m -> (m ** 2) / fromIntegral (size vectorSignal)) magnitudes
+        magnitudeSquared = cmap (\x -> magnitude x ** 2) fftResult    -- Calculate |X(f)|^2
+        n = fromIntegral $ size vectorSignal                          -- Number of samples
+        psd = toList $ cmap (/ n) magnitudeSquared                    -- Divide by N for proper scaling
     in psd
 
 

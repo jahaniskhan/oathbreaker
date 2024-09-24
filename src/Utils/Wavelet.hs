@@ -34,10 +34,10 @@ getWaveletCoefficients (Symlet n) = Left $ UnsupportedWavelet (Symlet n)
 getWaveletCoefficients (Coiflet n) = Left $ UnsupportedWavelet (Coiflet n)
 
 -- | Function to generate wavelet filter pairs (low-pass and high-pass)
-getWaveletFilterPair :: Wavelet -> Either WaveletError ([Double], [Double])
+getWaveletFilterPair :: Wavelet -> IO (FilterType, FilterType)
 getWaveletFilterPair wavelet = do
-    coeffs <- getWaveletCoefficients wavelet
-    let n = length coeffs
-        lowPass = coeffs
-        highPass = [ (-1) ^ k * coeffs !! (n - 1 - k) | k <- [0..n-1] ]
+    coeffs <- getWaveletCoefficients wavelet -- get wavelet coefficients
+    let n = length coeffs -- number of coefficients
+        lowPass = coeffs -- low pass filter is the same as the wavelet coefficients
+        highPass = [(-1) ^ k * coeffs !! (n - k - 1) | k <- [0..n-1]]
     return (lowPass, highPass)
