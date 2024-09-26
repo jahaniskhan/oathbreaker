@@ -2,10 +2,18 @@
 
 module Main where
 
-import ProactiveDefense.AdaptiveJamming
+import Simulator.SignalGenerator
 import ThreatDetection.AnomalyDetection
+import ThreatDetection.SignatureMatching
+import ProactiveDefense.AdaptiveJamming
+import ProactiveDefense.InterferenceGeneration
+import RFProcessor.SpectralAnalysis
 import RFProcessor.DigitalSignalProcessing
 import RFProcessor.SignalAcquisition
+import Common.Types
+import Utils.PCA
+import Utils.MathFunction
+import Utils.SDRInterface
 import Utils.DataStructures
 
 import Data.Complex (Complex, magnitude)
@@ -31,73 +39,76 @@ main = do
         duration = 1 :: Double
         centerFreq = 150 :: Double
         numSamples = floor (sampleRate * duration)
+        baseFreq = 100 :: Double
+        noiseAmp = 0.1 :: Double
+        signatures = [Signature "Sig1" [1, 2, 3], Signature "Sig2" [4, 5, 6]]
+        anomalies = [AnomalyPattern [7, 8, 9] 1000, AnomalyPattern [10, 11, 12] 2000]
 
-    -- Signal acquisition
-    let acquisitionConfig = AcquisitionConfig 
-            { acqSource = Simulated (MultiTone [100, 200])
-            , acqSampleRate = sampleRate
-            , acqDuration = duration
-            , acqCenterFreq = centerFreq
-            }
+    -- Generate base signal
+    let baseSignal = generateBaseSignal numSamples baseFreq sampleRate
 
-    signalResult <- acquireSignal acquisitionConfig
-    case signalResult of
-        Left err -> do
-            putStrLn $ "Error acquiring signal: " ++ show err
-            -- logError $ "Signal acquisition failed: " ++ show err
-        Right acquiredSignal -> do
-            putStrLn "Signal acquired successfully"
+    -- Inject signatures
+    let signalWithSignatures = injectSignatures baseSignal signatures
 
-            -- Process the signal
-            putStrLn "Processing signal..."
-            let metadata = SignalMetadata sampleRate centerFreq 1
-            (processedSignal, _) <- runRFProcessor (do
-                filtered <- applyFilter (lowPassFilter 150)
-                transformed <- waveletTransform 2
-                return transformed) acquiredSignal metadata
+    -- Add anomalies
+    let signalWithAnomalies = injectAnomalies signalWithSignatures anomalies
 
-            -- Detect anomalies
-            putStrLn "Detecting anomalies..."
-            let baseThreshold = 2.0
-                scoreThreshold = 5
-                windowSize = 128
-                hopSize = 64
-                anomalies = detectAnomalies (V.toList processedSignal) baseThreshold scoreThreshold windowSize hopSize sampleRate
+    -- Generate noise and add to the signal
+    noise <- generateWhiteNoise numSamples noiseAmp
+    let signalWithNoise = addNoise signalWithAnomalies noise
 
-            -- Generate jamming signal
-            putStrLn "Generating adaptive jamming signal..."
-            jammingSignalResult <- adaptiveJammingPCA 2 anomalies sampleRate duration
-            case jammingSignalResult of
-                Left err -> putStrLn $ "Error generating jamming signal: " ++ err
-                Right jammingSignal -> do
-                    -- Log results
-                    let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
-                    TIO.writeFile logFile $ T.unlines
-                        [ "Simulation ID: " <> T.pack simulationId
-                        , "Sample Rate: " <> T.pack (show sampleRate) <> " Hz"
-                        , "Duration: " <> T.pack (show duration) <> " s"
-                        , "Center Frequency: " <> T.pack (show centerFreq) <> " Hz"
-                        , "Detected Anomalies: " <> T.pack (show (length anomalies))
-                        , "Jamming Signal Length: " <> T.pack (show (length jammingSignal))
-                        , "\nDetailed Anomalies:"
-                        , T.unlines $ map (T.pack . show) anomalies
-                        ]
+    -- Create interference and generate composite signal
+    interference <- generateInterference (MultiTone [200, 300]) sampleRate duration
+    let compositeSignal = generateCompositeSignal signalWithNoise interference
 
-                    putStrLn $ "Results logged to " ++ logFile
+    -- Acquire the composite signal
+    let sdrParams = SDRParams sampleRate centerFreq 1.0
+    acquiredSignal <- acquireSignal sdrParams
 
-                    -- Visualize signals
-                    putStrLn "Generating visualizations..."
-                    let plotFile = "simulations/" ++ simulationId ++ "/signal_plot.svg"
-                    plotSignals plotFile [ ("Acquired Signal", V.toList acquiredSignal)
-                                         , ("Processed Signal", V.toList processedSignal)
-                                         , ("Jamming Signal", jammingSignal)
-                                         ]
-                    putStrLn $ "Signal plot saved to " ++ plotFile
-                    putStrLn "Simulation complete."
+    -- Calculate PSD
+    let psd = calculatePowerSpectralDensity (V.toList (samples acquiredSignal))
 
--- Helper function for low-pass filter
-lowPassFilter :: Double -> Double -> Double
-lowPassFilter cutoff f = if abs f < cutoff then 1 else 0
+    -- Detect threats
+    let detectedAnomalies = detectAnomalies (V.toList (samples acquiredSignal)) 2.0 5 128 64 sampleRate
+        detectedSignatures = matchSignatures signatures acquiredSignal
+
+    -- Generate jamming signal
+    jammingSignal <- adaptiveJammingPCA 2 detectedAnomalies sampleRate duration
+
+    case jammingSignal of
+        Left err -> putStrLn $ "Error generating jamming signal: " ++ err
+        Right jamSignal -> do
+            -- Log results
+            let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
+            TIO.writeFile logFile $ T.unlines
+                [ "Simulation ID: " <> T.pack simulationId
+                , "Sample Rate: " <> T.pack (show sampleRate) <> " Hz"
+                , "Duration: " <> T.pack (show duration) <> " s"
+                , "Center Frequency: " <> T.pack (show centerFreq) <> " Hz"
+                , "Detected Anomalies: " <> T.pack (show (length detectedAnomalies))
+                , "Detected Signatures: " <> T.pack (show detectedSignatures)
+                , "Jamming Signal Length: " <> T.pack (show (V.length jamSignal))
+                , "\nDetailed Anomalies:"
+                , T.unlines $ map (T.pack . show) detectedAnomalies
+                ]
+
+            putStrLn $ "Results logged to " ++ logFile
+
+            -- Visualize signals
+            putStrLn "Generating visualizations..."
+            let plotFile = "simulations/" ++ simulationId ++ "/signal_plot.svg"
+            plotSignals plotFile [ ("Composite Signal", V.toList (samples compositeSignal))
+                                 , ("Acquired Signal", V.toList (samples acquiredSignal))
+                                 , ("Jamming Signal", V.toList jamSignal)
+                                 ]
+            putStrLn $ "Signal plot saved to " ++ plotFile
+
+            -- Record data
+            let recordFile = "simulations/" ++ simulationId ++ "/signal_data.csv"
+            recordSignalData recordFile (V.toList (samples compositeSignal)) (V.toList (samples acquiredSignal)) (V.toList jamSignal)
+            putStrLn $ "Signal data recorded to " ++ recordFile
+
+            putStrLn "Simulation complete."
 
 -- Function to plot signals
 plotSignals :: FilePath -> [(String, [Complex Double])] -> IO ()
@@ -109,3 +120,9 @@ plotSignals filename signals = do
             forM_ signals $ \(name, signal) -> do
                 plot (line name [[(x, magnitude y) | (x, y) <- zip [0..] signal]])
     renderableToFile def filename chart
+
+-- Function to record signal data
+recordSignalData :: FilePath -> [Complex Double] -> [Complex Double] -> [Double] -> IO ()
+recordSignalData filename compositeSignal acquiredSignal jammingSignal = do
+    let csvData = unlines $ map (\(c, a, j) -> show (magnitude c) ++ "," ++ show (magnitude a) ++ "," ++ show j) (zip3 compositeSignal acquiredSignal jammingSignal)
+    writeFile filename csvData

@@ -198,7 +198,7 @@ detectSpectrumAnomaliesPCA psdMatrix threshold sampleRate windowSize =
                 Left _ -> []
                 Right PrincipalComponents { eigenvalues, eigenvectors } ->
                     let significantIndices = [ i | (i, ev) <- zip [0..] (LA.toList eigenvalues), ev > threshold ]
-                        anomalies = [ Anomaly freq (eigenvalues LA.@> i) SpectrumAnomaly 1.0
+                        anomalies = [ Anomaly freq (eigenvalues LA.! i) SpectrumAnomaly 1.0
                                     | i <- significantIndices
                                     , i < numBins
                                     , let freq = fromIntegral i * freqResolution

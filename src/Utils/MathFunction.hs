@@ -1,10 +1,17 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
+
 module Utils.MathFunction
     ( median
     , medianAbsoluteDeviation
     , stddev
+    , meanVector
+    , stdVector
     ) where
 
 import Data.List (sort)
+import qualified Numeric.LinearAlgebra as LA
+import Numeric.LinearAlgebra (Matrix, Vector)
 
 -- | Calculate the median of a list.
 -- Returns Nothing for an empty list.
@@ -34,7 +41,27 @@ stddev xs
   | variance == 0 = epsilon        -- Handle zero variance
   | otherwise     = sqrt variance
   where
-    n = fromIntegral (length xs)
-    meanVal = sum xs / n
-    variance = (sum (map (\x -> (x - meanVal) ^ 2) xs)) / (fromIntegral n - 1)
+    n = length xs
+    meanVal = sum xs / fromIntegral n
+    variance = sum (map (\x -> (x - meanVal) ** 2) xs) / fromIntegral (n - 1)
     epsilon = 1e-8                 -- Small epsilon value to prevent division by zero
+
+-- | Compute the mean of each column in the matrix.
+meanVector :: Matrix Double -> Vector Double
+meanVector mat = LA.scale (1 / fromIntegral (LA.rows mat)) (sumColumns mat)
+  where
+    -- | Compute the sum of each column in the matrix.
+    sumColumns :: Matrix Double -> Vector Double
+    sumColumns m = LA.fromList $ map LA.sumElements $ LA.toColumns m
+
+-- | Compute the standard deviation of each column in the matrix.
+stdVector :: Matrix Double -> Vector Double
+stdVector mat = LA.cmap sqrt variances  -- Replaced LA.^ with LA.cmap sqrt
+  where
+    means = meanVector mat
+    centeredMat = mat - LA.asRow means
+    variances = LA.scale (1 / fromIntegral (LA.rows mat - 1)) (sumColumns (LA.cmap (^2) centeredMat))  -- Replaced LA.sumRows and LA.^2 with sumColumns and LA.cmap (^2)
+
+    -- | Compute the sum of each column in the matrix.
+    sumColumns :: Matrix Double -> Vector Double
+    sumColumns m = LA.fromList $ map LA.sumElements $ LA.toColumns m

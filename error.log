@@ -1,0 +1,46 @@
+Build profile: -w ghc-9.8.1 -O1
+In order, the following will be built (use -v for more details):
+ - oathbreaker-0.1.1.0 (lib) (first run)
+ - oathbreaker-0.1.1.0 (exe:oathbreaker-exe) (first run)
+Preprocessing library for oathbreaker-0.1.1.0...
+Building library for oathbreaker-0.1.1.0...
+[ 6 of 13] Compiling Utils.MathFunction ( src/Utils/MathFunction.hs, /Users/jahankhan/oathbreaker/dist-newstyle/build/x86_64-osx/ghc-9.8.1/oathbreaker-0.1.1.0/build/Utils/MathFunction.o, /Users/jahankhan/oathbreaker/dist-newstyle/build/x86_64-osx/ghc-9.8.1/oathbreaker-0.1.1.0/build/Utils/MathFunction.dyn_o ) [Source file changed]
+
+src/Utils/MathFunction.hs:51:61: error: [GHC-76037]
+    Not in scope: ‘LA.sumRows’
+    NB: the module ‘Numeric.LinearAlgebra’ does not export ‘sumRows’.
+    Suggested fix:
+      Perhaps use one of these:
+        record field of SparseR ‘LA.nRows’ (imported from Numeric.LinearAlgebra),
+        ‘LA.toRows’ (imported from Numeric.LinearAlgebra),
+        ‘LA.fromRows’ (imported from Numeric.LinearAlgebra)
+   |
+51 | meanVector mat = LA.scale (1 / fromIntegral (LA.rows mat)) (LA.sumRows (LA.tr mat))
+   |                                                             ^^^^^^^^^^
+
+src/Utils/MathFunction.hs:63:64: error: [GHC-76037]
+    Not in scope: ‘LA.sumRows’
+    NB: the module ‘Numeric.LinearAlgebra’ does not export ‘sumRows’.
+    Suggested fix:
+      Perhaps use one of these:
+        record field of SparseR ‘LA.nRows’ (imported from Numeric.LinearAlgebra),
+        ‘LA.toRows’ (imported from Numeric.LinearAlgebra),
+        ‘LA.fromRows’ (imported from Numeric.LinearAlgebra)
+   |
+63 |     variances = LA.scale (1 / fromIntegral (LA.rows mat - 1)) (LA.sumRows (LA.tr (centeredMat LA.^ 2)))
+   |                                                                ^^^^^^^^^^
+
+src/Utils/MathFunction.hs:63:95: error: [GHC-76037]
+    Not in scope: ‘LA.^’
+    NB: the module ‘Numeric.LinearAlgebra’ does not export ‘^’.
+    Suggested fix:
+      Perhaps use one of these:
+        ‘LA.!’ (imported from Numeric.LinearAlgebra),
+        ‘LA.?’ (imported from Numeric.LinearAlgebra),
+        ‘LA.¿’ (imported from Numeric.LinearAlgebra)
+   |
+63 |     variances = LA.scale (1 / fromIntegral (LA.rows mat - 1)) (LA.sumRows (LA.tr (centeredMat LA.^ 2)))
+   |                                                                                               ^^^^
+Error: [Cabal-7125]
+Failed to build oathbreaker-0.1.1.0 (which is required by exe:oathbreaker-exe from oathbreaker-0.1.1.0).
+

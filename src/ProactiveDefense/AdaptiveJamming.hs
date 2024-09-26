@@ -1,3 +1,5 @@
+{-# LANGUAGE NamedFieldPuns #-}
+
 module ProactiveDefense.AdaptiveJamming
     ( adaptiveJamming
     , adaptiveJammingPCA
@@ -6,13 +8,14 @@ module ProactiveDefense.AdaptiveJamming
 import Data.Complex (Complex(..))
 import Simulator.SignalGenerator
 import ThreatDetection.AnomalyDetection
-import Numeric.LinearAlgebra (Vector, Matrix, (@>), (<>))
+import Numeric.LinearAlgebra (Vector, Matrix)
 import qualified Numeric.LinearAlgebra as LA
-import Utils.MathFunction (stddev)
 import Utils.PCA (performPCA, PrincipalComponents(..))
+import Utils.MathFunction (meanVector, stdVector)
 import Control.Monad (unless)
-import Control.Exception (try, SomeException)
-import Data.Either (either)
+import Control.Monad.Trans.Except
+import Control.Monad.Except (liftEither, ExceptT)
+import Control.Monad.IO.Class (liftIO)
 
 -- | Perform adaptive jamming based on detected anomalies.
 adaptiveJamming :: [Anomaly] -> Double -> Double -> IO (LA.Vector (Complex Double))
@@ -23,99 +26,90 @@ adaptiveJamming anomalies sampleRate duration = do
         putStrLn "Warning: Some anomalies have invalid features and will be ignored."
 
     -- Generate interference vectors for each valid anomaly
-    interferenceVectors <- mapM generateToneInterference validAnomalies
+    interferenceVectors <- mapM (\anomaly -> generateToneInterference anomaly sampleRate duration) validAnomalies
 
     -- Combine interference vectors safely
-    let combinedInterference = if null interferenceVectors
-                                then LA.fromList []
-                                else LA.foldl1' (LA.zipWith (+)) interferenceVectors
+    let numSamples = round (sampleRate * duration)
+        combinedInterference = if null interferenceVectors
+                                then LA.konst 0 numSamples
+                                else foldl1 (+) interferenceVectors
 
     return combinedInterference
-  where
-    -- Function to validate anomaly features
-    validateAnomaly :: Anomaly -> Bool
-    validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude } =
-        anomalyFrequency > 0 && anomalyMagnitude > 0
 
-    -- Generate a tone interference for a given anomaly
-    generateToneInterference :: Anomaly -> IO (LA.Vector (Complex Double))
-    generateToneInterference anomaly = do
-        let freq = anomalyFrequency anomaly
-        interferenceList <- generateInterference (Tone freq) sampleRate duration
-        return $ LA.fromList interferenceList
-
--- | Perform adaptive jamming using PCA based on detected anomalies.
-adaptiveJammingPCA :: Int -> [Anomaly] -> Double -> Double -> IO (Either String [Complex Double])
-adaptiveJammingPCA numComponents anomalies sampleRate duration = do
+-- | Perform adaptive jamming using PCA.
+adaptiveJammingPCA :: Int -> [Anomaly] -> Double -> Double -> IO (Either String (LA.Vector (Complex Double)))
+adaptiveJammingPCA numComponents anomalies sampleRate duration = runExceptT $ do
     let validAnomalies = filter validateAnomaly anomalies
+    unless (length validAnomalies >= max 2 numComponents) $
+        throwE "Not enough valid anomalies to perform PCA with the specified number of components."
 
-    if length validAnomalies < max 2 numComponents
-        then return $ Left "Not enough valid anomalies to perform PCA with the specified number of components."
-        else do
-            let dataMatrix = LA.fromRows $ map anomalyToFeatureVector validAnomalies
-            case standardizeData dataMatrix of
-                Left err -> return $ Left err
-                Right standardizedData -> do
-                    let covarianceMatrix = computeCovarianceMatrix standardizedData
+    let featureVectors = map (LA.fromList . anomalyToFeatureVector) validAnomalies
+        dataMatrix = LA.fromRows featureVectors
 
-                    -- Perform PCA
-                    let pcaResult = performPCA covarianceMatrix numComponents
-                    case pcaResult of
-                        Left pcaErr -> return $ Left pcaErr
-                        Right PrincipalComponents { eigenvectors } -> do
-                            -- Map principal components to jamming frequencies meaningfully
-                            let frequencyIndex = 0  -- Index of the frequency feature in the feature vector
-                                scalingFactor = 1.0  -- Adjust based on your application's needs
-                                principalComponents = LA.toColumns eigenvectors
-                                frequencyWeights = map (\pc -> pc LA.@> frequencyIndex) principalComponents
-                                jammingFrequencies = map (\w -> abs w * scalingFactor) frequencyWeights
+    standardizedData <- standardizeData dataMatrix
+    let covarianceMatrix = computeCovarianceMatrix standardizedData
 
-                            -- Filter out non-positive frequencies
-                            let validFrequencies = filter (> 0) jammingFrequencies
-                            unless (length validFrequencies == length jammingFrequencies) $
-                                putStrLn "Warning: Some jamming frequencies were non-positive and have been filtered out."
+    PrincipalComponents { eigenvalues, eigenvectors } <- liftEither $ performPCA covarianceMatrix numComponents
 
-                            let jammingComplexFreqs = map (:+ 0) validFrequencies
+    let principalComponents = LA.toColumns eigenvectors
+        frequencyWeights = map (\pc -> pc LA.! 0) principalComponents
 
-                            -- Generate interference with error handling
-                            interferenceResult <- generateInterferenceSafe (SpreadSpectrum jammingComplexFreqs) sampleRate duration
-                            return interferenceResult
-  where
-    -- Validate anomaly features
-    validateAnomaly :: Anomaly -> Bool
-    validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude } =
-        anomalyFrequency > 0 && anomalyMagnitude > 0
+    -- Normalize and map frequencies
+    let minW = minimum frequencyWeights
+        maxW = maximum frequencyWeights
+    unless (maxW - minW > 0) $
+        throwE "Cannot normalize frequencies because all frequency weights are equal."
 
-    -- Convert an anomaly to a feature vector for PCA
-    anomalyToFeatureVector :: Anomaly -> [Double]
-    anomalyToFeatureVector Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
-        [ anomalyFrequency
-        , anomalyMagnitude
-        , anomalyScore
-        ]
+    let normalizedWeights = map (\w -> (w - minW) / (maxW - minW)) frequencyWeights
+        maxFrequency = sampleRate / 2
+        jammingFrequencies = map (* maxFrequency) normalizedWeights
+        validFrequencies = filter (\f -> f > 0 && f <= maxFrequency) jammingFrequencies
 
-    -- Standardize the data matrix (zero mean and unit variance)
-    standardizeData :: LA.Matrix Double -> Either String (LA.Matrix Double)
-    standardizeData mat =
-        let means = LA.mean <$> LA.toColumns mat
-            stdDevsList = map (stddev . LA.toList) $ LA.toColumns mat
-            stdDevsRow = LA.asRow $ LA.fromList stdDevsList
-            zerosInStdDevs = any (<= 0) stdDevsList
-        in if zerosInStdDevs
-            then Left "Standard deviation is zero or negative for one or more features; cannot standardize data."
-            else
-                let meansRow = LA.asRow $ LA.fromList means
-                    standardizedMat = (mat - meansRow) / stdDevsRow
-                in Right standardizedMat
+    unless (not (null validFrequencies)) $
+        throwE "No valid frequencies generated for interference."
 
-    -- Compute covariance matrix
-    computeCovarianceMatrix :: LA.Matrix Double -> LA.Matrix Double
-    computeCovarianceMatrix stdData =
-        let n = fromIntegral (LA.rows stdData)
-        in (LA.tr stdData <> stdData) / (n - 1)
+    -- Generate interference signal
+    interferenceVector <- liftIO $ generateInterference (SpreadSpectrum validFrequencies) sampleRate duration
+    return interferenceVector
 
-    -- Safely generate interference, handling potential errors
-    generateInterferenceSafe :: InterferenceType -> Double -> Double -> IO (Either String [Complex Double])
-    generateInterferenceSafe interferenceType sr dur = do
-        result <- try $ generateInterference interferenceType sr dur :: IO (Either SomeException [Complex Double])
-        return $ either (Left . show) Right result
+-- | Function to validate anomaly features
+validateAnomaly :: Anomaly -> Bool
+validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
+    isFinite anomalyFrequency && anomalyFrequency > 0 &&
+    isFinite anomalyMagnitude && anomalyMagnitude >= 0 &&
+    isFinite anomalyScore && anomalyScore >= 0
+
+-- Helper function to check if a value is finite
+isFinite :: RealFloat a => a -> Bool
+isFinite x = not (isNaN x || isInfinite x)
+
+-- Generate a tone interference for a given anomaly
+generateToneInterference :: Anomaly -> Double -> Double -> IO (LA.Vector (Complex Double))
+generateToneInterference anomaly sampleRate duration = do
+    let freq = anomalyFrequency anomaly
+    interferenceVector <- generateInterference (Tone freq) sampleRate duration
+    return interferenceVector
+
+-- | Converts an anomaly to a feature vector.
+anomalyToFeatureVector :: Anomaly -> [Double]
+anomalyToFeatureVector Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
+    [ anomalyFrequency, anomalyMagnitude, anomalyScore ]
+
+-- | Standardize the data matrix (zero mean and unit variance)
+standardizeData :: LA.Matrix Double -> ExceptT String IO (LA.Matrix Double)
+standardizeData mat = do
+    let means = meanVector mat
+        centeredMat = mat - LA.asRow means
+        stdDevs = stdVector mat
+    -- Check that all standard deviations are non-zero
+    unless (all (/= 0) (LA.toList stdDevs)) $
+        throwE "Standard deviation is zero for one or more features; cannot standardize data."
+
+    let standardizedMat = centeredMat / LA.asRow stdDevs
+    return standardizedMat
+
+-- | Compute covariance matrix
+computeCovarianceMatrix :: LA.Matrix Double -> LA.Matrix Double
+computeCovarianceMatrix stdData =
+    let n = fromIntegral (LA.rows stdData)
+    in (LA.tr stdData LA.<> stdData) / (n - 1)

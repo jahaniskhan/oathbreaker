@@ -35,7 +35,7 @@ performPCA mat numComponents
             covarianceMatrix = (LA.tr matCentered LA.<> matCentered) / fromIntegral (LA.rows mat - 1)
 
             -- Step 3: Eigen Decomposition
-            (eigenvalues', eigenvectors') = LA.eigSH covarianceMatrix
+            (eigenvalues', eigenvectors') = LA.eigSH (LA.sym covarianceMatrix)
 
             -- Step 4: Sorting Eigenvalues and Eigenvectors
             eigenPairs = zip (LA.toList eigenvalues') (LA.toColumns eigenvectors')
@@ -54,7 +54,7 @@ centerMatrix mat meanVec = mat - LA.asRow meanVec
 
 -- | Calculates the mean of each column in the matrix.
 meanColumns :: LA.Matrix Double -> LA.Vector Double
-meanColumns m = LA.scale (1 / fromIntegral (LA.rows m)) columnSums
+meanColumns m = LA.scale (1 / fromIntegral (LA.rows m)) (LA.fromList columnSums)
   where
-    transposed = LA.tr m
-    columnSums = LA.foldRowWise (+) transposed
+    columnSums = [LA.sumElements col | col <- LA.toColumns m]
+  
