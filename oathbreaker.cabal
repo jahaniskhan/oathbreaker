@@ -1,8 +1,7 @@
 cabal-version: 3.6
-
 name:                oathbreaker
-version:             0.1.0.0
-synopsis:            Advanced RF signal processing and threat detection
+version:             0.1.1.0
+synopsis:            Advanced RF Signal Processing and Threat Detection
 description:         A Haskell project for simulating, analyzing, and defending against RF threats.
 license:             BSD-3-Clause
 license-file:        LICENSE
@@ -10,85 +9,74 @@ author:              Your Name
 maintainer:          your.email@example.com
 category:            Security
 build-type:          Simple
+extra-doc-files:     CHANGELOG.md
 
-extra-source-files:  CHANGELOG.md
+source-repository head
+  type:     git
+  location: https://github.com/jahaniskhan/oathbreaker.git
+
+common shared-deps
+  build-depends:
+      base >=4.7 && <5
+    , containers >=0.6 && <0.7
+    , vector >=0.12.1 && <0.14
+    , mtl >=2.2 && <3
+    , transformers >=0.6 && <0.7
+    , exceptions >=0.10 && <0.11
+    , mwc-random >=0.15 && <0.16
+    , bytestring >=0.11 && <0.13
+    , binary >=0.8.9 && <0.10
+    , random >=1.2 && <1.4
+    , filepath >=1.4.100.4 && <2.0
+    , unix >=2.8.5.1 && <3.0
+    , hmatrix >=0.20.2 && <0.21 
+    , hmatrix-gsl >=0.19.0.1 && <0.20
+    , hashable >=1.4.6.0 && <2.0
+    , aeson >=2.2 && <2.4
+    , array >=0.5.4 && <0.6
+    , Chart >=1.8.0.3 && <1.10
+    , Chart-diagrams >=1.8.0.2 && <1.10
+    , diagrams-lib >=1.4.3 && <1.5
+    , diagrams-svg >=1.4.3 && <1.5
+    , diagrams-contrib >=1.4.3 && <1.5
+  default-language: Haskell2010
+  default-extensions:
+      OverloadedStrings
+  ghc-options: -Wall -O2
 
 library
-  exposed-modules:     RFProcessor.SignalAcquisition
-                     , ThreatDetection.AnomalyDetection
-                     , ProactiveDefense.InterferenceGeneration
-                     , ProactiveDefense.AdaptiveJamming
-                     , ThreatDetection.SignatureMatching
-                     , RFProcessor.DigitalSignalProcessing
-                     , RFProcessor.SpectralAnalysis
-                     , Utils.DataStructures
-                     , Utils.SDRInterface
-                     , Common.Types
-  hs-source-dirs:      src
-  default-language:    Haskell2010
-  ghc-options:         -Wall
-  build-depends:
-      base >=4.17 && <5,
-      vector,
-      hmatrix >=0.20.0.0,
-      bytestring >=0.11.3.1,
-      binary >=0.8.9.1,
-      statistics >=0.16.0.0,
-      fft >=0.1.8.7,
-      random,
-      mtl >=2.2,
-      mwc-random,
-      containers,
-      transformers,
-      Chart,
-      time,
-      text,
-      directory,
-      unix >=2.8.5.1 && <3.0,
-      os-string >=2.0.6 && <3.0,
-      filepath >=1.4.100.4 && <2.0
+  import: shared-deps
+  hs-source-dirs: src
+  exposed-modules:
+      RFProcessor.SignalAcquisition
+    , ThreatDetection.AnomalyDetection
+    , ProactiveDefense.AdaptiveJamming
+    , ThreatDetection.SignatureMatching
+    , RFProcessor.DigitalSignalProcessing
+    , RFProcessor.SpectralAnalysis
+    , Utils.DataStructures
+    , Utils.SDRInterface
+    , Common.Types
+    , Utils.PCA
+    , Utils.Wavelet
+    , Utils.MathFunction
+    , Simulator.SignalGenerator
 
-executable oathbreaker
-  main-is:             Main.hs
-  hs-source-dirs:      app
-  default-language:    Haskell2010
-  ghc-options:         -Wall
+executable oathbreaker-exe
+  import: shared-deps
+  hs-source-dirs: app
+  main-is: Main.hs
   build-depends:
-      base >=4.17 && <5,
-      oathbreaker,
-      hmatrix,
-      fft >=0.1.8.7,
-      Chart,
-      time,
-      text,
-      directory,
-      containers,
-      transformers,
-      mtl,
-      unix >=2.8.5.1 && <3.0,
-      os-string >=2.0.6 && <3.0,
-      filepath >=1.4.100.4 && <2.0
+      oathbreaker
+    , optparse-applicative >=0.14 && <1.0
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
 
 test-suite oathbreaker-test
-  type:                exitcode-stdio-1.0
-  main-is:             Spec.hs
-  hs-source-dirs:      test
-  default-language:    Haskell2010
-  ghc-options:         -Wall
+  import: shared-deps
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Spec.hs
   build-depends:
-      base >=4.17 && <5,
-      oathbreaker,
-      hmatrix,
-      fft >=0.1.8.7,
-      HUnit >=1.6.0.0,
-      QuickCheck,
-      hspec,
-      bytestring,
-      binary,
-      random,
-      containers,
-      transformers,
-      mtl,
-      unix >=2.8.5.1 && <3.0,
-      os-string >=2.0.6 && <3.0,
-      filepath >=1.4.100.4 && <2.0
+      oathbreaker
+    , hspec >=2.7 && <3
+  default-language: Haskell2010

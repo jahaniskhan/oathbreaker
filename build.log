@@ -1,0 +1,5 @@
+[ 6 of 12] Compiling Utils.PCA        ( src/Utils/PCA.hs, /Users/jahankhan/oathbreaker/dist-newstyle/build/x86_64-osx/ghc-9.8.1/oathbreaker-0.1.1.0/build/Utils/PCA.o, /Users/jahankhan/oathbreaker/dist-newstyle/build/x86_64-osx/ghc-9.8.1/oathbreaker-0.1.1.0/build/Utils/PCA.dyn_o )
+src/Utils/PCA.hs:53:43: error: [GHC-88464]
+        ‘Prelude’ (at src/Utils/PCA.hs:8:1-28).
+src/Utils/PCA.hs:60:47: error: [GHC-31891]
+    • imported qualified from ‘Numeric.LinearAlgebra’ at src/Utils/PCA.hs:9:1-44

@@ -3,48 +3,46 @@ module Common.Types (
     SignalSource(..),
     SimulatedSignal(..),
     AcquisitionError(..),
-    Anomaly(..)
+    Anomaly(..),
+    AnomalyType(..) -- Exposing the AnomalyType for external usage
 ) where
 
--- Removed unused import of Data.Complex
--- If only instances are needed, import it as follows:
-import Data.Complex ()  -- Import instances only
-
---import Data.IORef (IORef)
-
--- Define your data types here
+-- | Configuration settings for signal acquisition.
 data AcquisitionConfig = AcquisitionConfig
-    { acqSource     :: SignalSource
-    , acqSampleRate :: Double
-    , acqDuration   :: Double
-    , acqCenterFreq :: Double
+    { sampleRate   :: Double -- ^ Sampling rate in Hz
+    , signalLength :: Int    -- ^ Number of samples to acquire
     } deriving (Show, Eq)
 
-data SignalSource
-    = SDR
-    | Simulated SimulatedSignal
+-- | Represents the source of the signal.
+data SignalSource = RealSignal String        -- ^ Real signal from a specified source.
+                  | Simulated SimulatedSignal -- ^ Simulated signal.
     deriving (Show, Eq)
 
-data SimulatedSignal
-    = WhiteNoise
-    | Sine Double          -- Frequency
-    | MultiTone [Double]
-    | QPSK Double          -- Symbol Rate
+-- | Represents a simulated signal with specific parameters.
+data SimulatedSignal = SimulatedSignal
+    { frequency :: Double   -- ^ Frequency in Hz
+    , amplitude :: Double   -- ^ Amplitude of the signal
+    , noiseLevel :: Double  -- ^ Noise level to be added
+    } deriving (Show, Eq)
+
+-- | Errors that can occur during signal acquisition.
+data AcquisitionError = SignalTimeout
+                      | InvalidConfiguration String
+                      | HardwareFailure String
     deriving (Show, Eq)
 
-data AcquisitionError
-    = SourceNotFound
-    | InvalidConfig String
-    | ParsingFailed String
-    | InsufficientVariance
-    deriving (Show, Eq)
-
+-- | Represents an anomaly detected in the signal.
 data Anomaly = Anomaly
-    { anomalyFrequencyBin :: Int
-    , anomalyMagnitude    :: Double
-    , anomalyType         :: AnomalyType
-    , anomalyScore        :: Double
+    { anomalyFrequencyBin :: Int            -- ^ Frequency bin where anomaly was detected.
+    , anomalyMagnitude    :: Double         -- ^ Magnitude of the anomaly.
+    , anomalyType         :: AnomalyType    -- ^ Type/category of the anomaly.
+    , anomalyScore        :: Double         -- ^ Score indicating the severity or confidence of the anomaly.
     } deriving (Show, Eq)
 
-data AnomalyType = UnexpectedPeak | SignalDropout | NoiseBurst | SpectrumAnomaly | TimeFrequencyAnomaly
+-- | Enumerates the types of anomalies that can be detected.
+data AnomalyType = UnexpectedPeak       -- ^ An unexpected peak detected in the spectrum.
+                 | SignalDropout        -- ^ A dropout or drop in signal strength.
+                 | NoiseBurst           -- ^ A burst of noise interfering with the signal.
+                 | SpectrumAnomaly      -- ^ General anomalies in the frequency spectrum.
+                 | TimeFrequencyAnomaly -- ^ Anomalies detected in the time-frequency domain.
     deriving (Show, Eq)
