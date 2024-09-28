@@ -9,7 +9,6 @@ Ghost Signal is an advanced RF (Radio Frequency) analysis and defense system des
 1. RF Signal Processor
 2. Threat Detection and Analysis
 3. Proactive Defense Simulator
-4. Drone Swarm Coordinator (separate project)
 
 ## Technical Highlights
 
@@ -21,10 +20,10 @@ Ghost Signal is an advanced RF (Radio Frequency) analysis and defense system des
 ## Project Structure
 
 ```
-
 ghost-signal/
 ├── src/
-│   ├── Main.hs
+│   ├── Simulator/
+│   │   └── SignalGenerator.hs
 │   ├── RFProcessor/
 │   │   ├── SignalAcquisition.hs
 │   │   ├── DigitalSignalProcessing.hs
@@ -33,10 +32,11 @@ ghost-signal/
 │   │   ├── AnomalyDetection.hs
 │   │   └── SignatureMatching.hs
 │   ├── ProactiveDefense/
-│   │   ├── InterferenceGeneration.hs
 │   │   └── AdaptiveJamming.hs
 │   └── Utils/
-│       ├── SDRInterface.hs
+│       ├── PCA.hs
+│       ├── Wavelet.hs
+│       ├── MathFunction.hs
 │       └── DataStructures.hs
 ├── test/
 │   └── Spec.hs
@@ -49,80 +49,81 @@ ghost-signal/
 
 ## Key Features
 
-1. **Advanced RF Signal Processing**
-   - Implements Fast Fourier Transform (FFT) using the `vector` library
-   - Utilizes the `conduit` library for efficient streaming of signal data
-   - Employs software-defined radio techniques for flexible signal acquisition
+1. **Signal Generation and Acquisition**
+   - Generates base signals, injects signatures and anomalies, and adds noise
+   - Simulates signal acquisition using software-defined radio techniques
 
-2. **Monad-based Signal Processing Pipeline**
-   - Uses the `RFProcessorT` monad transformer for composable signal processing operations
-   - Implements the `SignalT` monad for managing signal metadata throughout the processing chain
+2. **RF Signal Processing**
+   - Performs spectral analysis using Fast Fourier Transform (FFT)
+   - Implements digital signal processing techniques like filtering and windowing
 
 3. **Threat Detection and Analysis**
-   - Employs probabilistic data structures (e.g., Bloom filters) for efficient signal matching
-   - Implements theoretical machine learning models using the `hmatrix` library for signal classification
+   - Detects anomalies in the signal using various techniques
+   - Matches known threat signatures against the acquired signal
 
 4. **Proactive Defense Simulation**
-   - Simulates adaptive jamming techniques using pure functions
-   - Generates theoretical interference patterns based on detected threat signals
+   - Simulates adaptive jamming based on detected anomalies
+   - Generates interference signals to counter potential threats
 
-5. **Synthetic Signal Generation**
-   - Produces realistic RF signals mimicking various modulation types (AM, FM, digital)
-   - Generates complex noise patterns to simulate real-world environments
+5. **Utility Functions and Data Structures**
+   - Provides utility functions for mathematical operations and data manipulation
+   - Implements custom data structures for efficient signal processing
 
-6. **Performance Measurement and Stress Testing**
-   - Tracks processing time and memory usage for each stage of the signal processing pipeline
-   - Implements stress tests to evaluate system performance under high load
+## Usage
 
-7. **Distributed Processing Simulation**
-   - Simulates a distributed computing environment for scalable signal processing
-   - Implements a basic load balancing algorithm for task distribution
+The main application logic resides in the `app/Main.hs` file. It orchestrates the signal generation, acquisition, processing, threat detection, and proactive defense simulation.
 
-8. **SDR Hardware Integration Simulation**
-   - Provides a virtual SDR interface that mimics real hardware operations
-   - Simulates various SDR protocols (e.g., RTL-SDR, HackRF) for compatibility testing
+```haskell:app/Main.hs
+startLine: 36
+endLine: 62
+```
 
-9. **Data Storage and Analysis**
-   - Integrates with InfluxDB for time-series data storage of processed signals and performance metrics
-   - Utilizes PostGIS for geospatial analysis of signal sources
+The main function performs the following steps:
 
-10. **Deployment and Scalability**
-    - Includes Dockerfile for containerized deployment
-    - Implements a plugin architecture for easy integration of external modules
+1. Generates a base signal with the specified parameters
+2. Injects signatures and anomalies into the signal
+3. Adds noise to the signal
+4. Creates interference and generates a composite signal
+5. Acquires the composite signal using simulated SDR
+6. Calculates the Power Spectral Density (PSD) of the acquired signal
+7. Detects anomalies and matches threat signatures in the signal
+8. Generates an adaptive jamming signal based on the detected anomalies
 
-## Theoretical Proactive Defense Strategies
+```haskell:app/Main.hs
+startLine: 63
+endLine: 76
+```
 
-- Adaptive Frequency Hopping
-- Cognitive Jamming
-- Deceptive Signal Generation
+The results of the simulation, including detected anomalies, signatures, and the generated jamming signal, are logged to a file.
 
-## How to Run
+```haskell:app/Main.hs
+startLine: 77
+endLine: 95
+```
 
-1. Ensure you have Stack and Docker installed on your system.
-2. Clone the repository: `git clone https://github.com/yourusername/ghost-signal.git`
-3. Navigate to the project directory: `cd ghost-signal`
-4. Build the project: `stack build`
-5. Run the main application: `stack run`
-6. For containerized deployment: `docker build -t ghost-signal . && docker run ghost-signal`
+Finally, the application visualizes the signals using the `plotSignals` function and records the signal data to a CSV file using the `recordSignalData` function.
 
-## Testing
+```haskell:app/Main.hs
+startLine: 96
+endLine: 111
+```
 
-- Run the test suite: `stack test`
-- Execute performance tests: `stack run performance-test`
-- Run stress tests: `stack run stress-test`
+## Future Enhancements
 
-## Extending the System
+- Integration with real SDR hardware for signal acquisition
+- Implementation of more advanced machine learning algorithms for threat detection
+- Optimization of signal processing algorithms for improved performance
+- Expansion of the proactive defense strategies based on real-world scenarios
 
-The project is designed with a plugin architecture and dependency injection, allowing for easy integration of real hardware interfaces and custom processing modules. Refer to the `docs/ExtendingGhostSignal.md` for detailed instructions.
+## Contributing
 
-## Future Improvements
+Contributions to the Ghost Signal project are welcome! If you encounter any issues or have suggestions for improvements, please open an issue on the project's GitHub repository.
 
-1. Implement more sophisticated machine learning models for signal classification
-2. Enhance the distributed processing simulator with advanced load balancing algorithms
-3. Integrate with actual SDR hardware for real-world signal processing
-4. Develop a real-time visualization dashboard for signal analysis and system performance
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for more information.
 
 ## Disclaimer
 
-This project is purely theoretical and educational. It is designed to showcase advanced programming concepts, signal processing techniques, and system design principles. The proactive defense strategies discussed are simulations and should not be implemented in real-world scenarios without proper authorization and ethical considerations.
+The Ghost Signal project is intended for educational and research purposes only. The simulated proactive defense strategies should not be used in real-world scenarios without proper authorization and consideration of legal and ethical implications.
 
