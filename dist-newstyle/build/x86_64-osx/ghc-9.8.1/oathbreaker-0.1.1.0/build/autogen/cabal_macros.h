@@ -190,6 +190,16 @@
   (major1) == 0 && (major2) <  15 || \
   (major1) == 0 && (major2) == 15 && (minor) <= 1)
 #endif /* MIN_VERSION_mwc_random */
+/* package primitive-0.9.0.0 */
+#ifndef VERSION_primitive
+#define VERSION_primitive "0.9.0.0"
+#endif /* VERSION_primitive */
+#ifndef MIN_VERSION_primitive
+#define MIN_VERSION_primitive(major1,major2,minor) (\
+  (major1) <  0 || \
+  (major1) == 0 && (major2) <  9 || \
+  (major1) == 0 && (major2) == 9 && (minor) <= 0)
+#endif /* MIN_VERSION_primitive */
 /* package random-1.2.1.2 */
 #ifndef VERSION_random
 #define VERSION_random "1.2.1.2"

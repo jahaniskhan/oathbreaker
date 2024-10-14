@@ -9,21 +9,27 @@ module ThreatDetection.AnomalyDetection
 
 import Data.Complex (Complex(..), magnitude)
 import RFProcessor.SpectralAnalysis (calculatePowerSpectralDensity, detectPeaks)
-import Numeric.LinearAlgebra (Vector, fromList)
+import Numeric.LinearAlgebra (Vector)
 import Numeric.GSL.Fourier (fft)
 import qualified Numeric.LinearAlgebra as LA
-import Data.Vector.Storable (Vector)
 import qualified Data.Vector.Storable as V
 
-import Utils.MathFunction (median, medianAbsoluteDeviation)
+-- Removed unused imports:
+-- import Numeric.LinearAlgebra (Vector, fromList)
+-- import Data.Vector.Storable (Vector)
+
+-- Removed unused functions from Utils.MathFunction:
+-- import Utils.MathFunction (median, medianAbsoluteDeviation)
+
 import Utils.PCA (performPCA, PrincipalComponents(..))
+import Utils.MathFunction (median, medianAbsoluteDeviation)
 
 -- | Represents an anomaly in the signal
 data Anomaly = Anomaly
-    { anomalyFrequency    :: Double      -- ^ Frequency in Hz
-    , anomalyMagnitude    :: Double
-    , anomalyType         :: AnomalyType
-    , anomalyScore        :: Double
+    { anomalyFrequency :: Double      -- ^ Frequency in Hz
+    , anomalyMagnitude :: Double
+    , anomalyType      :: AnomalyType
+    , anomalyScore     :: Double
     } deriving (Show, Eq)
 
 -- | Types of anomalies
@@ -95,12 +101,13 @@ detectAnomalies :: [Complex Double] -- ^ Input signal
                 -> Double           -- ^ Sample rate
                 -> [Anomaly]
 detectAnomalies signal baseThreshold scoreThreshold windowSize hopSize sampleRate = 
-    let psd = calculatePowerSpectralDensity signal
-        weightedThreshold = calculateWeightedThreshold psd baseThreshold
+    let psdList = calculatePowerSpectralDensity signal
+        psd = LA.fromList psdList
+        weightedThreshold = calculateWeightedThreshold psdList baseThreshold
         basicAnomalies = detectBasicAnomalies signal psd weightedThreshold sampleRate windowSize
         spectrogram = calculateSpectrogram signal windowSize hopSize
         timeFreqAnomalies = detectTimeFrequencyAnomalies spectrogram weightedThreshold sampleRate windowSize
-        psdMatrix = preparePsdForPCA psd
+        psdMatrix = preparePsdForPCA psdList
         pcaAnomalies = detectSpectrumAnomaliesPCA psdMatrix weightedThreshold sampleRate windowSize
         allAnomalies = basicAnomalies ++ timeFreqAnomalies ++ pcaAnomalies
         scoredAnomalies = scoreAnomalies allAnomalies windowSize
@@ -118,15 +125,15 @@ calculateWeightedThreshold psd baseThreshold =
 
 -- | Detect basic anomalies (peaks, dropouts, bursts)
 detectBasicAnomalies :: [Complex Double] -- ^ Input signal
-                     -> [Double]         -- ^ Power Spectral Density
+                     -> LA.Vector Double -- ^ Power Spectral Density
                      -> Double           -- ^ Weighted threshold
                      -> Double           -- ^ Sample rate
                      -> Int              -- ^ Window size
                      -> [Anomaly]
 detectBasicAnomalies signal psd threshold sampleRate windowSize = 
-    let peaks = detectPeaks psd 5
-        avgMagnitude = if null psd then 0 else sum psd / fromIntegral (length psd)
-        localThresholds = calculateLocalThresholds psd
+    let peaks = detectPeaks (LA.toList psd) 5
+        avgMagnitude = if LA.size psd == 0 then 0 else LA.sumElements psd / fromIntegral (LA.size psd)
+        localThresholds = calculateLocalThresholds (LA.toList psd)
         freqResolution = sampleRate / fromIntegral windowSize
         unexpectedPeaks = [ Anomaly freq v UnexpectedPeak 1.0
                           | (i, v) <- peaks

@@ -24,6 +24,7 @@ common shared-deps
     , transformers >=0.6 && <0.7
     , exceptions >=0.10 && <0.11
     , mwc-random >=0.15 && <0.16
+    , primitive >=0.7 && <0.10
     , bytestring >=0.11 && <0.13
     , binary >=0.8.9 && <0.10
     , random >=1.2 && <1.4
@@ -61,6 +62,7 @@ library
     , Utils.Wavelet
     , Utils.MathFunction
     , Simulator.SignalGenerator
+  ghc-options: -Wall -O2 
 
 executable oathbreaker-exe
   import: shared-deps
@@ -69,7 +71,7 @@ executable oathbreaker-exe
   build-depends:
       oathbreaker
     , optparse-applicative >=0.14 && <1.0
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N 
 
 test-suite oathbreaker-test
   import: shared-deps
