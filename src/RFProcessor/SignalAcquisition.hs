@@ -1,33 +1,34 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
 module RFProcessor.SignalAcquisition
-    ( performSignalPCA
-    , sortIndices
+    ( acquireSignal
+    , SDRParams(..)
     ) where
 
-import Numeric.LinearAlgebra (Matrix, Vector)
+import Common.Types
+import Simulator.SignalGenerator (Signal(..), generateWhiteNoise)
+import Data.Complex (Complex(..))
+import qualified Data.Vector.Storable as V
+import System.Random.MWC (GenIO, uniformR)
+import qualified System.Random.MWC as MWC
+import Numeric.LinearAlgebra (Vector, fromList)
 import qualified Numeric.LinearAlgebra as LA
-import Utils.PCA (performPCA, PrincipalComponents(..))
-import Data.List (sortBy)
-import Data.Ord (comparing)
 
--- | Performs PCA on the signal data matrix and returns transformed data and explained variance.
-performSignalPCA :: LA.Matrix Double  -- ^ Data matrix (observations x features).
-                 -> Int               -- ^ Number of principal components to retain.
-                 -> Either String (LA.Matrix Double, LA.Vector Double)
-performSignalPCA dataMatrix numComponents = do
-    PrincipalComponents { eigenvalues, eigenvectors } <- performPCA dataMatrix numComponents
-    let principalComponents = LA.fromColumns (LA.toColumns eigenvectors)
-        transformedData     = dataMatrix LA.<> principalComponents
-    return (transformedData, eigenvalues)
+-- | SDR Acquisition Parameters
+data SDRParams = SDRParams
+    { sdrSampleRate      :: Double
+    , sdrCenterFrequency :: Double
+    , sdrGain            :: Double
+    } deriving (Show, Eq)
 
--- | Sorts the indices of the vector in descending order based on the vector's values.
---
--- Useful for identifying the top-k features or components.
---
--- Example:
---
--- >>> sortIndices (fromList [0.3, 0.1, 0.4, 0.2])
--- [2,0,3,1]
-sortIndices :: Vector Double -> [Int]
-sortIndices v = map snd $ sortBy (flip (comparing fst)) $ zip (LA.toList v) [0..]
+
+-- | Simulates SDR hardware signal acquisition
+acquireSignal :: SDRParams -> Signal -> IO Signal
+acquireSignal SDRParams { sdrSampleRate, centerFrequency, gain } (Signal _ samples) = do
+    gen <- MWC.createSystemRandom
+    -- Simulate hardware noise
+    noise <- generateWhiteNoise gen (V.length samples) (gain * 0.05)  -- 5% of gain
+    -- Simulate signal degradation (e.g., attenuation)
+    let attenuatedSignal = V.map (* (gain * 0.8)) samples  -- 80% of gain
+        acquiredSamples = V.zipWith (+) attenuatedSignal noise
+    return $ Signal sampleRate acquiredSamples

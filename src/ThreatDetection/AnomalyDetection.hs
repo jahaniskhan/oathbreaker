@@ -173,14 +173,71 @@ detectNoiseBursts signal avgMag sampleRate =
     ]
 
 -- | Score anomalies based on window size or other criteria
-scoreAnomalies :: [Anomaly] -- ^ List of anomalies
-               -> Int       -- ^ Window size
-               -> [Anomaly]
-scoreAnomalies anomalies windowSize = 
-    map (\a -> a { anomalyScore = computeScore a windowSize }) anomalies
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
+module ThreatDetection.AnomalyDetection
+    ( detectAnomalies
+    , Anomaly(..)
+    , AnomalyType(..)
+    ) where
+
+import Data.Complex (Complex(..), magnitude)
+import RFProcessor.SpectralAnalysis (calculatePowerSpectralDensity, detectPeaks)
+import Numeric.LinearAlgebra (Vector)
+import qualified Numeric.LinearAlgebra as LA
+import qualified Data.Vector.Storable as V
+
+import Utils.PCA (performPCA, PrincipalComponents(..))
+import Utils.MathFunction (median, medianAbsoluteDeviation)
+
+-- | Represents an anomaly in the signal
+data Anomaly = Anomaly
+    { anomalyFrequency :: Double      -- ^ Frequency in Hz
+    , anomalyMagnitude :: Double
+    , anomalyType      :: AnomalyType
+    , anomalyScore     :: Double
+    } deriving (Show, Eq)
+
+-- | Types of anomalies
+data AnomalyType = UnexpectedPeak 
+                 | SignalDropout 
+                 | NoiseBurst 
+                 | SpectrumAnomaly 
+                 | TimeFrequencyAnomaly
+    deriving (Show, Eq)
+
+-- | Main function to detect anomalies using various techniques
+detectAnomalies :: [Complex Double] -- ^ Input signal
+                -> Double           -- ^ Base threshold
+                -> Int              -- ^ Score threshold
+                -> Int              -- ^ Window size
+                -> Int              -- ^ Hop size
+                -> Double           -- ^ Sample rate
+                -> [Anomaly]
+detectAnomalies signal baseThreshold scoreThreshold windowSize hopSize sampleRate = 
+    let psdList = calculatePowerSpectralDensity (V.toList signal)
+        detectedPeaks = detectPeaks psdList 5
+        anomalies = map createAnomaly detectedPeaks
+        scoredAnomalies = scoreAnomalies anomalies
+    in filter (\a -> anomalyScore a > fromIntegral scoreThreshold) scoredAnomalies
   where
-    computeScore :: Anomaly -> Int -> Double
-    computeScore anomaly ws = fromIntegral ws * 0.1  -- Example scoring logic
+    createAnomaly :: (Int, Double) -> Anomaly
+    createAnomaly (i, v) =
+        Anomaly
+            { anomalyFrequency = fromIntegral i * (sampleRate / fromIntegral windowSize)
+            , anomalyMagnitude = v
+            , anomalyType = UnexpectedPeak
+            , anomalyScore = 1.0  -- Initial score
+            }
+
+    -- | Score anomalies based on their magnitude
+    scoreAnomalies :: [Anomaly] -> [Anomaly]
+    scoreAnomalies = map scoreAnomaly
+      where
+        scoreAnomaly :: Anomaly -> Anomaly
+        scoreAnomaly a@Anomaly { anomalyMagnitude } = a { anomalyScore = anomalyMagnitude }
+
 
 -- | Prepare PSD data for PCA by organizing it into a matrix
 preparePsdForPCA :: [Double] -- ^ Power Spectral Density

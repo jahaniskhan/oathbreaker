@@ -1,47 +1,61 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Main where
 
 import Simulator.SignalGenerator
-    ( generateBaseSignal
-    , injectSignature       
-    , injectAnomaly         
-    , generateWhiteNoise
-    , addNoise
-    , generateCompositeSignal
+    ( generateCompositeSignal
     , generateInterferenceDeterministic
     , generateInterferenceStochastic
-    , InterferenceType(..)  
+    , InterferenceType(..)
     , Signature(..)
     , AnomalyPattern(..)
-    , Signal(..)
-    , injectSignatureRandom
-    , injectAnomalyRandom
     )
 import ThreatDetection.AnomalyDetection
+    ( detectAnomalies
+    , Anomaly(..)
+    , AnomalyType(..)
+    )
 import ThreatDetection.SignatureMatching
+    ( matchSignatures
+    , MatchResult(..)
+    )
 import ProactiveDefense.AdaptiveJamming
+    ( adaptiveJamming
+    , adaptiveJammingPCA
+    )
 import RFProcessor.SpectralAnalysis
+    ( calculatePowerSpectralDensity
+    , detectPeaks
+    )
 import RFProcessor.DigitalSignalProcessing
+    ( waveletTransform
+    , adaptiveFilter
+    , SignalMetadata(..)
+    , runRFProcessor
+    )
 import RFProcessor.SignalAcquisition
+    ( acquireSignal
+    , SDRParams(..)
+    )
 import Common.Types
 import Utils.PCA
 import Utils.MathFunction
-import Utils.SDRInterface
-import Utils.DataStructures
 
-import Data.Complex (Complex, magnitude)
+import Data.Complex (Complex, magnitude, cis)
 import qualified Data.Vector.Storable as V
+import qualified Numeric.LinearAlgebra as LA
 import Graphics.Rendering.Chart.Easy
 import Graphics.Rendering.Chart.Backend.Diagrams
 import Data.Time
 import System.Directory (createDirectoryIfMissing)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Control.Monad (forM_)
-import System.Random (newStdGen)
+import Control.Monad (forM_, unless, when, void)
 import Control.Monad.State (runState, State)
 import qualified System.Random.MWC as MWC
+import Control.Concurrent (threadDelay)
+import Control.Exception (catch, SomeException)
 
 main :: IO ()
 main = do
@@ -59,128 +73,176 @@ main = do
         numSamples = floor (sampleRate * duration)
         baseFreq = 100 :: Double
         noiseAmp = 0.1 :: Double
-        signatures = [Signature "Sig1" [1 :+ 0, 2 :+ 0, 3 :+ 0], Signature "Sig2" [4 :+ 0, 5 :+ 0, 6 :+ 0]]
-        anomalies = [AnomalyPattern [7 :+ 0, 8 :+ 0, 9 :+ 0] 1000, AnomalyPattern [10 :+ 0, 11 :+ 0, 12 :+ 0] 2000]
+        signatures = [ Signature "Sig1" [1 :+ 0, 2 :+ 0, 3 :+ 0]
+                    , Signature "Sig2" [4 :+ 0, 5 :+ 0, 6 :+ 0]
+                    ]
+        anomalies = [ AnomalyPattern [7 :+ 0, 8 :+ 0, 9 :+ 0] 1000
+                   , AnomalyPattern [10 :+ 0, 11 :+ 0, 12 :+ 0] 2000
+                   ]
 
     -- Create a new MWC generator
     gen <- MWC.createSystemRandom
 
-    -- Generate composite signal
-    compositeSignal <- generateCompositeSignal gen numSamples baseFreq sampleRate signatures anomalies noiseAmp
+    -- Initialize SDR Parameters
+    let sdrParams = SDRParams sampleRate centerFreq 1.0
+
+    -- Define Signal Metadata
+    let metadata = SignalMetadata
+            { sampleRate = sampleRate
+            , centerFrequency = centerFreq
+            , gain = 1.0
+            }
+
+    -- Initialize Simulation Loop Parameters
+    let simulationIterations = 100  -- Number of simulation steps
+        sleepTimeMicroseconds = 100000  -- 0.1 seconds between iterations
+
+    -- Start the Continuous Simulation Loop
+    runSimulationLoop simulationId gen numSamples baseFreq noiseAmp signatures anomalies sdrParams metadata simulationIterations sleepTimeMicroseconds
+
+    putStrLn "RF Simulation terminated."
+
+-- | Runs the continuous simulation loop
+runSimulationLoop :: String               -- ^ Simulation ID
+                 -> MWC.GenIO            -- ^ Random generator
+                 -> Int                  -- ^ Number of samples
+                 -> Double               -- ^ Base frequency
+                 -> Double               -- ^ Noise amplitude
+                 -> [Signature]          -- ^ List of signatures
+                 -> [AnomalyPattern]     -- ^ List of anomalies
+                 -> SDRParams            -- ^ SDR parameters
+                 -> SignalMetadata       -- ^ Signal metadata
+                 -> Int                  -- ^ Number of iterations
+                 -> Int                  -- ^ Sleep time in microseconds
+                 -> IO ()
+runSimulationLoop simulationId gen numSamples baseFreq noiseAmp signatures anomalies sdrParams metadata 0 _ = putStrLn "Completed all simulation iterations."
+runSimulationLoop simulationId gen numSamples baseFreq noiseAmp signatures anomalies sdrParams metadata iter sleepTime = do
+    -- 1. Signal Generation
+    compositeSignal <- generateCompositeSignal gen numSamples baseFreq (sampleRate metadata) signatures anomalies noiseAmp
     let compositeSignalSamples = samples compositeSignal
 
-    -- Generate Interference
-    let interferenceType = MultiTone [200, 300] -- Example: Deterministic Interference
-    interferenceSignal <- case interferenceType of
-        WhiteNoise -> generateInterferenceStochastic gen interferenceType sampleRate duration
-        QAM _ _ -> generateInterferenceStochastic gen interferenceType sampleRate duration
-        OFDM _ -> generateInterferenceStochastic gen interferenceType sampleRate duration
-        Chirp _ _ -> generateInterferenceStochastic gen interferenceType sampleRate duration
-        SpreadSpectrum _ -> generateInterferenceStochastic gen interferenceType sampleRate duration
-        Tone _ -> generateInterferenceDeterministic interferenceType sampleRate duration
-        Sweep _ _ -> generateInterferenceDeterministic interferenceType sampleRate duration
-        MultiTone _ -> generateInterferenceDeterministic interferenceType sampleRate duration
+    -- 2. SDR Acquisition
+    acquiredSignal <- acquireSignal sdrParams compositeSignal
 
-    -- Combine Signals
-    let combinedSignal = Signal sampleRate $ addNoise compositeSignalSamples interferenceSignal
+    -- 3. Digital Signal Processing
+    -- Apply Wavelet Transformation
+    waveletResult <- runRFProcessor (waveletTransform Haar 2) acquiredSignal metadata
+    let (waveletTransformed, _) = waveletResult
 
-    -- SDR Acquisition
-    let sdrParams = SDRParams sampleRate centerFreq 1.0
-    acquiredSignal <- acquireSignal sdrParams combinedSignal
+    -- Apply Adaptive Filtering
+    -- Use the wavelet-transformed signal as desired for filtering
+    filteredSignalResult <- runRFProcessor (adaptiveFilter (samples acquiredSignal) 0.01 5) acquiredSignal metadata
+    let (filteredSignal, _) = filteredSignalResult
 
-    -- | Calculate Power Spectral Density (PSD)
-    --
-    -- Analyze the acquired signal to determine its power distribution across different frequencies.
-    -- PSD is a crucial metric for identifying signal strengths and potential interferences.
+    -- 4. Spectral Analysis
     let psd = calculatePowerSpectralDensity (V.toList (samples acquiredSignal))
+    let detectedPeaks = detectPeaks psd 5  -- Window size for peak detection
 
-    -- TODO: Visualize PSD to aid in the analysis of signal characteristics.
+    -- 5. Anomaly Detection
+    let detectedAnomalies = detectAnomalies (V.toList (samples acquiredSignal)) 2.0 5 128 64 (sampleRate metadata)
 
-    -- | Detect Threats: Anomalies and Signature Matching
-    --
-    -- Utilize detection algorithms to identify anomalies and match known signatures within the acquired signal.
-    -- This step is essential for threat analysis and ensuring signal integrity.
-    let detectedAnomalies = detectAnomalies (V.toList (samples acquiredSignal)) 2.0 5 128 64 sampleRate
-        detectedSignatures = matchSignatures signatures acquiredSignal
+    -- 6. Signature Matching
+    let detectedSignatures = matchSignatures signatures (V.toList (samples acquiredSignal))
 
-    -- TODO: Refine detection parameters or employ machine learning techniques for improved accuracy.
+    -- 7. Anomaly Validation
+    let validatedAnomalies = validateAnomalies detectedAnomalies
 
-    -- | Generate Adaptive Jamming Signal
-    --
-    -- Based on detected anomalies, generate a jamming signal using Principal Component Analysis (PCA).
-    -- The jamming signal aims to neutralize or mitigate detected threats.
-    jammingSignalResult <- adaptiveJammingPCA 2 detectedAnomalies sampleRate duration
+    -- 8. Adaptive Jamming
+    jammingSignalResult <- adaptiveJammingPCA 2 validatedAnomalies (sampleRate metadata) duration
 
+    -- 9. Final Signal Processing
     case jammingSignalResult of
         Left err -> putStrLn $ "Error generating jamming signal: " ++ err
         Right jammingSignal -> do
-            -- Logging
-            let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
-            TIO.writeFile logFile $ T.unlines
-                [ "Simulation ID: " <> T.pack simulationId
-                , "Sample Rate: " <> T.pack (show sampleRate) <> " Hz"
-                , "Duration: " <> T.pack (show duration) <> " s"
-                , "Center Frequency: " <> T.pack (show centerFreq) <> " Hz"
-                , "Detected Anomalies: " <> T.pack (show (length detectedAnomalies))
-                , "Detected Signatures: " <> T.pack (show detectedSignatures)
-                , "Jamming Signal Length: " <> T.pack (show (LA.size jammingSignal))
-                , "\nDetailed Anomalies:"
-                , T.unlines $ map (T.pack . show) detectedAnomalies
-                ]
+            let finalSignal = addNoise (V.toList (samples acquiredSignal)) (LA.toList jammingSignal)
 
-            putStrLn $ "Results logged to " ++ logFile
+            -- 10. Logging
+            appendLog simulationId iter detectedAnomalies detectedSignatures jammingSignal
 
-            -- TODO: Implement a logging mechanism that categorizes logs by severity levels (e.g., INFO, WARNING, ERROR).
+            -- 11. Visualization and Recording
+            visualizeAndRecord simulationId iter compositeSignalSamples acquiredSignal jammingSignal
 
-            -- | Visualize Signals
-            --
-            -- Generate visual representations of the composite, acquired, and jamming signals.
-            -- These visualizations aid in the qualitative analysis of signal behaviors.
-            putStrLn "Generating visualizations..."
-            let plotFile = "simulations/" ++ simulationId ++ "/signal_plot.svg"
-            plotSignals plotFile
-                [ ("Composite Signal", V.toList compositeSignalSamples)
-                , ("Acquired Signal", V.toList (samples acquiredSignal))
-                , ("Jamming Signal", LA.toList jammingSignal)
-                ]
-            putStrLn $ "Signal plot saved to " ++ plotFile
+    -- 12. Sleep and Continue
+    threadDelay sleepTime
+    runSimulationLoop simulationId gen numSamples baseFreq noiseAmp signatures anomalies sdrParams metadata (iter - 1) sleepTime
 
-            -- TODO: Expand visualization to include time-domain and frequency-domain plots for comprehensive analysis.
+  where
+    duration = 1.0 :: Double  -- Duration remains constant for simplicity
 
-            -- | Record Signal Data
-            --
-            -- Save the magnitude of the composite, acquired, and jamming signals into a CSV file.
-            -- This data facilitates further quantitative analysis and processing.
-            let recordFile = "simulations/" ++ simulationId ++ "/signal_data.csv"
-            recordSignalData recordFile compositeSignalSamples (V.toList (samples acquiredSignal)) (LA.toList jammingSignal)
-            putStrLn $ "Signal data recorded to " ++ recordFile
+    -- | Validates anomalies before jamming
+    validateAnomalies :: [Anomaly] -> [Anomaly]
+    validateAnomalies = filter isSignificant
+      where
+        isSignificant :: Anomaly -> Bool
+        isSignificant Anomaly { anomalyScore, anomalyMagnitude } =
+            anomalyScore > 1.0 && anomalyMagnitude > 0.5  -- Example thresholds
 
-            -- TODO: Incorporate additional signal attributes (e.g., phase information) into the recorded data for enhanced insights.
+    -- | Appends simulation data to a log file
+    appendLog :: String -> Int -> [Anomaly] -> [MatchResult] -> [Double] -> IO ()
+    appendLog simulationId iter detectedAnomalies detectedSignatures jammingSignal = do
+        let logFile = "simulations/" ++ simulationId ++ "/simulation_log.txt"
+        TIO.appendFile logFile $ T.unlines
+            [ "Iteration: " <> T.pack (show (100 - iter + 1))
+            , "Detected Anomalies: " <> T.pack (show (length detectedAnomalies))
+            , "Validated Anomalies: " <> T.pack (show (length (filter isValid detectedAnomalies)))
+            , "Detected Signatures: " <> T.pack (show (length detectedSignatures))
+            , "Jamming Signal Length: " <> T.pack (show (length jammingSignal))
+            , "\nDetailed Anomalies:"
+            , T.unlines $ map (T.pack . show) (filter isValid detectedAnomalies)
+            , "-----------------------------"
+            ]
+      where
+        isValid :: Anomaly -> Bool
+        isValid Anomaly { anomalyScore, anomalyMagnitude } =
+            anomalyScore > 1.0 && anomalyMagnitude > 0.5
 
-            putStrLn "Simulation complete."
+    -- | Function to plot signals
+    --
+    -- Generates a visualization of multiple signals and saves it as an SVG file.
+    -- Each signal is represented with its magnitude across sample points.
+    visualizeAndRecord :: String -> Int -> V.Vector (Complex Double) -> Signal -> [Double] -> IO ()
+    visualizeAndRecord simulationId iter compositeSamples acquiredSignal jammingSignal = do
+        let plotFile = "simulations/" ++ simulationId ++ "/signal_plot_" ++ show iter ++ ".svg"
+        plotSignals plotFile
+            [ ("Composite Signal", V.toList compositeSamples)
+            , ("Acquired Signal", V.toList (samples acquiredSignal))
+            , ("Jamming Signal", jammingSignal)
+            ]
+        putStrLn $ "Iteration " ++ show (100 - iter + 1) ++ " processed and plotted."
 
--- | Function to plot signals
---
--- Generates a visualization of multiple signals and saves it as an SVG file.
--- Each signal is represented with its magnitude across sample points.
-plotSignals :: FilePath -> [(String, [Complex Double])] -> IO ()
-plotSignals filename signals = do
-    let chart = toRenderable $ do
-            layout_title .= "Signal Comparison"        -- Title of the chart
-            layout_x_axis . laxis_title .= "Sample"     -- Label for the x-axis
-            layout_y_axis . laxis_title .= "Magnitude"  -- Label for the y-axis
-            forM_ signals $ \(name, signal) -> do
-                -- Plot each signal as a separate line on the chart
-                plot (line name [[(x, magnitude y) | (x, y) <- zip [0..] signal]])
-    renderableToFile def filename chart
+        -- Record Signal Data
+        let recordFile = "simulations/" ++ simulationId ++ "/signal_data.csv"
+        recordSignalData recordFile compositeSamples (samples acquiredSignal) jammingSignal
+        putStrLn $ "Signal data recorded to " ++ recordFile
 
--- | Function to record signal data
---
--- Saves the magnitude of the composite, acquired, and jamming signals into a CSV file.
--- Each row in the CSV corresponds to a sample point with its respective magnitudes.
-recordSignalData :: FilePath -> V.Vector (Complex Double) -> [Complex Double] -> [Double] -> IO ()
-recordSignalData filename compositeSignal acquiredSignal jammingSignal = do
-    let csvData = "Composite,Magnitude,Acquired,Magnitude,Jamming\n" ++
-                  unlines (map (\(c, a, j) -> show (magnitude c) ++ "," ++ show (magnitude a) ++ "," ++ show j) (zip3 (V.toList compositeSignal) acquiredSignal jammingSignal))
-    writeFile filename csvData
-    -- TODO: Include headers in the CSV file for clarity (e.g., "Composite,Magnitude,Acquired,Magnitude,Jamming").
+    -- | Function to plot signals
+    plotSignals :: FilePath -> [(String, [Complex Double])] -> IO ()
+    plotSignals filename signals = do
+        let chart = toRenderable $ do
+                layout_title .= "Signal Comparison"
+                layout_x_axis . laxis_title .= "Sample"
+                layout_y_axis . laxis_title .= "Magnitude"
+                forM_ signals $ \(name, signal) -> do
+                    plot (line name [[(x, magnitude y) | (x, y) <- zip [0..] signal]])
+        renderableToFile def filename chart
+
+    -- | Function to record signal data
+    --
+    -- Saves the magnitude of the composite, acquired, and jamming signals into a CSV file.
+    -- Each row in the CSV corresponds to a sample point with its respective magnitudes.
+    recordSignalData :: FilePath -> V.Vector (Complex Double) -> V.Vector (Complex Double) -> [Double] -> IO ()
+    recordSignalData filename compositeSignal acquiredSignal jammingSignal = do
+        let compositeList = V.toList compositeSignal
+            acquiredList = V.toList acquiredSignal
+            jammingList = jammingSignal
+            maxLen = maximum [length compositeList, length acquiredList, length jammingList]
+            compositePadded = take maxLen $ compositeList ++ repeat (0 :+ 0)
+            acquiredPadded = take maxLen $ acquiredList ++ repeat (0 :+ 0)
+            jammingPadded = take maxLen $ jammingList ++ repeat 0.0
+            csvData = if null compositeList
+                        then "Composite,Magnitude,Acquired,Magnitude,Jamming\n"
+                        else ""
+                      ++ unlines (map formatRow $ zip3 compositePadded acquiredPadded jammingPadded)
+            formatRow (c, a, j) = show (magnitude c) ++ "," ++ show (magnitude a) ++ "," ++ show j
+        when (null compositeList) $ writeFile filename "Composite,Magnitude,Acquired,Magnitude,Jamming\n"  -- Write headers once
+        appendFile filename csvData

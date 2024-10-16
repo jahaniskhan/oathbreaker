@@ -1,23 +1,24 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
-module Simulator.SignalGenerator
-    ( generateBaseSignal
-    , injectSignature
-    , injectAnomaly
-    , generateWhiteNoise
-    , addNoise
-    , generateCompositeSignal
-    , generateInterferenceDeterministic
-    , generateInterferenceStochastic
-    , InterferenceType(..)
-    , Signature(..)
-    , AnomalyPattern(..)
-    , Signal(..)
-    , injectSignatureRandom
-    , injectAnomalyRandom
-    ) where
+module Simulator.SignalGenerator (
+    generateBaseSignal,
+    injectSignature,
+    injectAnomaly,
+    generateWhiteNoise,
+    addNoise,
+    generateCompositeSignal,
+    generateInterferenceDeterministic,
+    generateInterferenceStochastic,
+    InterferenceType(..),
+    Signature(..),
+    AnomalyPattern(..),
+    Signal(..),
+    injectSignatureRandom,
+    injectAnomalyRandom
+) where
 
---import Prelude (cos, pi, sqrt)
+import Common.Types
 import Data.Complex (Complex(..), cis)
 import Control.Monad (replicateM, foldM)
 import Data.List (splitAt, foldl1)
@@ -26,8 +27,28 @@ import qualified System.Random.MWC as MWC
 import qualified System.Random.MWC.Distributions as MWC
 import Control.Monad.Primitive (PrimState)
 import System.Random (RandomGen, randomR)
+import Numeric.LinearAlgebra (Vector, fromList)
+import qualified Numeric.LinearAlgebra as LA
 
--- Define data types
+-- | Represents a signal with its sampling rate and samples.
+data Signal = Signal
+    { signalSampleRate :: Double
+    , samples    :: V.Vector (Complex Double)
+    } deriving (Show, Eq)
+
+-- | Represents a signature with a name and pattern.
+data Signature = Signature
+    { signatureName    :: String
+    , signaturePattern :: [Complex Double]
+    } deriving (Show, Eq)
+
+-- | Represents an anomaly pattern with its characteristics.
+data AnomalyPattern = AnomalyPattern
+    { anomalyPattern  :: [Complex Double]
+    , anomalyFrequency :: Double
+    } deriving (Show, Eq)
+
+-- | Enumerates different types of interference.
 data InterferenceType
     = WhiteNoise
     | Tone Double
@@ -39,121 +60,109 @@ data InterferenceType
     | MultiTone [Double]
     deriving (Show, Eq)
 
-data Signature = Signature
-    { signatureName :: String
-    , signaturePattern :: [Complex Double]
-    }
+-- | Generates the base sine wave signal.
+generateBaseSignal :: Int -> Double -> Double -> Double -> Signal
+generateBaseSignal numSamples baseFreq sampleRate amplitude =
+    let time = [0..fromIntegral numSamples - 1] / sampleRate
+        sig = map (\t -> amplitude * cis (2 * pi * baseFreq * t)) time
+    in Signal sampleRate (V.fromList sig)
 
-data AnomalyPattern = AnomalyPattern
-    { anomalyPattern :: [Complex Double]
-    , anomalyPos :: Int
-    }
+-- | Injects a signature into the signal at a random position.
+injectSignatureRandom :: GenIO -> Signature -> V.Vector (Complex Double) -> IO (V.Vector (Complex Double))
+injectSignatureRandom gen Signature { signaturePattern } samples = do
+    let sigLen = V.length samples
+        patLen = length signaturePattern
+    pos <- MWC.uniformR (0, sigLen - patLen) gen
+    let updated = samples V.// [(pos + i, samples V.! (pos + i) + signaturePattern !! i) | i <- [0..patLen -1]]
+    return updated
 
-data Signal = Signal
-    { sampleRate :: Double
-    , samples :: V.Vector (Complex Double)
-    }
+-- | Injects an anomaly into the signal at a specified position.
+injectAnomaly :: Int -> AnomalyPattern -> V.Vector (Complex Double) -> V.Vector (Complex Double)
+injectAnomaly pos AnomalyPattern { anomalyPattern } samples =
+    let patLen = length anomalyPattern
+        updated = samples V.// [(pos + i, samples V.! (pos + i) + anomalyPattern !! i) | i <- [0..patLen -1], pos + i < V.length samples]
+    in updated
 
--- | Generates the base signal.
-generateBaseSignal :: Int    -- ^ Number of samples
-                   -> Double -- ^ Base frequency in Hz
-                   -> Double -- ^ Base sample rate in Hz
-                   -> Signal
-generateBaseSignal numSamples freq sr =
-    let t = [0, 1 / sr .. (fromIntegral numSamples - 1) / sr]
-        baseSamples = V.fromList [cos (2 * pi * freq * ti) :+ 0 | ti <- t]
-    in Signal sr baseSamples
+-- | Injects an anomaly at a random position.
+injectAnomalyRandom :: GenIO -> AnomalyPattern -> V.Vector (Complex Double) -> IO (V.Vector (Complex Double))
+injectAnomalyRandom gen anomalyPattern samples = do
+    let sigLen = V.length samples
+        patLen = length (anomalyPattern anomalyPattern)
+    pos <- MWC.uniformR (0, sigLen - patLen) gen
+    return $ injectAnomaly pos anomalyPattern samples
 
--- | Injects a signature into the signal at a fixed position.
-injectSignature :: [Complex Double] -- ^ Signature pattern
-                -> Int               -- ^ Position to inject
-                -> V.Vector (Complex Double) -- ^ Original signal
-                -> V.Vector (Complex Double)
-injectSignature signature pos signal =
-    let (before, after) = V.splitAt pos signal
-        signatureVector = V.fromList signature
-    in before V.++ signatureVector V.++ V.drop (pos + V.length signatureVector) after
+-- | Generates white noise.
+generateWhiteNoise :: GenIO -> Int -> Double -> IO (V.Vector (Complex Double))
+generateWhiteNoise gen numSamples amplitude = do
+    noise <- V.replicateM numSamples $ do
+        real <- MWC.normal 0 (amplitude / sqrt 2) gen
+        imag <- MWC.normal 0 (amplitude / sqrt 2) gen
+        return (real :+ imag)
+    return noise
 
--- | Injects an anomaly into the signal.
-injectAnomaly :: [Complex Double] -- ^ Anomaly pattern
-              -> Int               -- ^ Position to inject
-              -> V.Vector (Complex Double) -- ^ Original signal
-              -> V.Vector (Complex Double)
-injectAnomaly anomaly pos signal =
-    let (before, after) = V.splitAt pos signal
-        anomalyVector = V.fromList anomaly
-    in before V.++ anomalyVector V.++ V.drop (pos + V.length anomalyVector) after
-
--- | Generates random white noise to be added to the signal.
-generateWhiteNoise :: MWC.GenIO -> Int -> Double -> IO (V.Vector (Complex Double))
-generateWhiteNoise gen numSamples noiseAmplitude = 
-    V.replicateM numSamples $ do
-        realPart <- MWC.normal 0 (noiseAmplitude / sqrt 2) gen
-        imagPart <- MWC.normal 0 (noiseAmplitude / sqrt 2) gen
-        return (realPart :+ imagPart)
-
--- | Combines base signal with noise.
-addNoise :: V.Vector (Complex Double)    -- ^ Base signal
-         -> V.Vector (Complex Double)    -- ^ Noise
-         -> V.Vector (Complex Double)
+-- | Adds two signals together.
+addNoise :: V.Vector (Complex Double) -> V.Vector (Complex Double) -> V.Vector (Complex Double)
 addNoise = V.zipWith (+)
 
--- | Generates deterministic interference signal based on the specified InterferenceType.
-generateInterferenceDeterministic :: InterferenceType -> Double -> Double -> V.Vector (Complex Double)
-generateInterferenceDeterministic interferenceType sr duration = 
-    case interferenceType of
-        Tone frequency -> generateTone frequency sr duration
-        Sweep startFreq endFreq -> generateSweep startFreq endFreq sr duration
-        MultiTone frequencies -> generateMultiTone frequencies sr duration
-        _ -> V.empty -- Handle other deterministic types or throw an error
+-- | Generates a composite signal with signatures and anomalies.
+generateCompositeSignal :: GenIO -> Int -> Double -> Double -> [Signature] -> [AnomalyPattern] -> Double -> IO Signal
+generateCompositeSignal gen numSamples baseFreq sampleRate signatures anomalies noiseAmp = do
+    -- Step 1: Generate the base signal
+    let baseSignal = generateBaseSignal numSamples baseFreq sampleRate 1.0
+        baseSamples = samples baseSignal
+    
+    -- Step 2: Inject signatures
+    sigSamples <- foldM (\acc sig -> injectSignatureRandom gen sig acc) baseSamples signatures
+    
+    -- Step 3: Inject anomalies
+    finalSamples <- foldM (\acc anomaly -> injectAnomalyRandom gen anomaly acc) sigSamples anomalies
+    
+    -- Step 4: Add overall noise
+    whiteNoise <- generateWhiteNoise gen numSamples noiseAmp
+    let noisySamples = addNoise finalSamples whiteNoise
+    
+    -- Step 5: Return the final composite signal
+    return $ Signal sampleRate noisySamples
 
--- | Generates stochastic interference signal based on the specified InterferenceType.
-generateInterferenceStochastic :: MWC.GenIO -> InterferenceType -> Double -> Double -> IO (V.Vector (Complex Double))
-generateInterferenceStochastic gen interferenceType sr duration = 
-    case interferenceType of
-        WhiteNoise -> generateWhiteNoise gen (floor (sr * duration)) 1.0
-        QAM order symbolRate -> generateQAM gen order symbolRate sr duration
-        OFDM subcarriers -> generateOFDM gen subcarriers sr duration
-        Chirp startFreq endFreq -> generateChirp gen startFreq endFreq sr duration
-        SpreadSpectrum freqs -> generateSpreadSpectrum gen freqs sr duration
-        MultiTone frequencies -> generateMultiToneStochastic gen frequencies sr duration
-        _ -> return V.empty -- Handle other stochastic types or throw an error
+-- | Generates deterministic interference based on InterferenceType.
+generateInterferenceDeterministic :: InterferenceType -> Double -> Double -> IO (LA.Vector (Complex Double))
+generateInterferenceDeterministic (Tone freq) sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+        time = [0..fromIntegral numSamples - 1] / sampleRate
+        interference = map (\t -> cis (2 * pi * freq * t)) time
+    return $ LA.fromList interference
+generateInterferenceDeterministic (Sweep startFreq endFreq) sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+        time = [0..fromIntegral numSamples - 1] / sampleRate
+        interference = map (\t -> cis (2 * pi * (startFreq + (endFreq - startFreq) * t / duration) * t)) time
+    return $ LA.fromList interference
+generateInterferenceDeterministic (MultiTone freqs) sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+        time = [0..fromIntegral numSamples - 1] / sampleRate
+        interference = [ sum [cis (2 * pi * f * t) | f <- freqs] | t <- time ]
+    return $ LA.fromList interference
+-- Add other deterministic interference types as needed.
 
--- | Generates a tone interference signal.
-generateTone :: Double -> Double -> Double -> V.Vector (Complex Double)
-generateTone frequency sr duration =
-    let numSamples = floor (sr * duration) :: Int
-        t = [0, 1 / sr .. (fromIntegral numSamples - 1) / sr]
-    in V.fromList [cos (2 * pi * frequency * ti) :+ 0 | ti <- t]
+-- | Generates stochastic interference based on InterferenceType.
+generateInterferenceStochastic :: GenIO -> InterferenceType -> Double -> Double -> IO (LA.Vector (Complex Double))
+generateInterferenceStochastic gen WhiteNoise sampleRate duration = do
+    noise <- generateWhiteNoise gen (floor $ sampleRate * duration) 1.0
+    return $ LA.fromList $ V.toList noise
+generateInterferenceStochastic gen (SpreadSpectrum freqs) sampleRate duration = do
+    let numSamples = floor (sampleRate * duration)
+    spreadSignal <- foldM (\acc f -> do
+                            interference <- generateInterferenceDeterministic (Tone f) sampleRate duration
+                            return $ acc + interference
+                        ) (LA.konst 0 numSamples) freqs
+    return spreadSignal
+-- Add other stochastic interference types like OFDM, QAM, Chirp as needed.
 
--- | Generates a frequency sweep interference signal.
-generateSweep :: Double -> Double -> Double -> Double -> V.Vector (Complex Double)
-generateSweep startFreq endFreq sr duration =
-    let numSamples = floor (sr * duration) :: Int
-        t = [0, 1 / sr .. (fromIntegral numSamples - 1) / sr]
-        freqs = [startFreq + (endFreq - startFreq) * ti / duration | ti <- take numSamples t]
-    in V.fromList [cos (2 * pi * f * ti) :+ 0 | (f, ti) <- zip freqs t]
+-- | Utility function to perform foldM with Vectors.
+foldM :: Monad m => (a -> b -> m a) -> a -> [b] -> m a
+foldM _ acc []     = return acc
+foldM f acc (x:xs) = f acc x >>= \acc' -> foldM f acc' xs
 
--- | Generates a multi-tone interference signal.
-generateMultiTone :: [Double] -> Double -> Double -> V.Vector (Complex Double)
-generateMultiTone frequencies sr duration =
-    let numSamples = floor (sr * duration) :: Int
-        t = [0, 1 / sr .. (fromIntegral numSamples - 1) / sr]
-    in foldl1 (V.zipWith (+)) [V.fromList [cos (2 * pi * f * ti) :+ 0 | ti <- t] | f <- frequencies]
-
--- | Generates a stochastic multi-tone interference signal by adding random phases to each tone.
-generateMultiToneStochastic :: MWC.GenIO -> [Double] -> Double -> Double -> IO (V.Vector (Complex Double))
-generateMultiToneStochastic gen frequencies sr duration = do
-    let numSamples = floor (sr * duration) :: Int
-        t = [0, 1 / sr .. (fromIntegral numSamples - 1) / sr]
-    -- For each frequency, generate a list of samples with a random phase
-    interference <- mapM (\f -> do
-                             phase <- MWC.uniformR (0, 2 * pi) gen
-                             return [cos (2 * pi * f * ti + phase) :+ sin (2 * pi * f * ti + phase) | ti <- t]
-                         ) frequencies
-    -- Sum all interference vectors element-wise
-    let summedInterference = foldl1 (V.zipWith (+)) [V.fromList s | s <- interference]
-    return summedInterference
+-- Additional Interference Generators
 
 -- | Generates QAM interference.
 generateQAM :: MWC.GenIO -> Int -> Double -> Double -> Double -> IO (V.Vector (Complex Double))
@@ -211,44 +220,19 @@ generateSpreadSpectrum gen freqs sr duration = do
     phases <- replicateM (length freqs) $ MWC.uniformR (0, 2 * pi) gen
     return $ V.fromList [sum [cos (2 * pi * f * ti + phase) :+ sin (2 * pi * f * ti + phase) | (f, phase) <- zip freqs phases] | ti <- t]
 
--- | Generates a composite signal with base signal, noise, signatures, and anomalies.
-generateCompositeSignal :: MWC.GenIO         -- ^ Random number generator
-                       -> Int               -- ^ Number of samples
-                       -> Double            -- ^ Base frequency in Hz
-                       -> Double            -- ^ Base sample rate in Hz
-                       -> [Signature]       -- ^ List of signatures to inject
-                       -> [AnomalyPattern]  -- ^ List of anomalies to inject
-                       -> Double            -- ^ Noise amplitude
-                       -> IO Signal
-generateCompositeSignal gen sampleCount baseFreq baseSampleRate signatures anomalies noiseAmp = do
-    -- Step 1: Generate the base signal
-    let baseSignal = generateBaseSignal sampleCount baseFreq baseSampleRate
-    
-    -- Step 2: Generate white noise
-    noiseVector <- generateWhiteNoise gen sampleCount noiseAmp
-    
-    -- Step 3: Add noise to the base signal to create noisySignal
-    let noisySignal = addNoise (samples baseSignal) noiseVector
-    
-    -- Step 4: Inject signatures into the noisy signal
-    signalWithSignatures <- foldM (\sig s -> injectSignatureRandom gen (signaturePattern s) sig) noisySignal signatures
-    
-    -- Step 5: Inject anomalies into the signal with signatures
-    finalSignal <- foldM (\sig a -> injectAnomalyRandom gen a sig) signalWithSignatures anomalies
-    
-    -- Step 6: Return the final composite signal
-    return $ Signal baseSampleRate finalSignal
-
--- | Injects a signature at a random position within the signal.
-injectSignatureRandom :: MWC.GenIO -> [Complex Double] -> V.Vector (Complex Double) -> IO (V.Vector (Complex Double))
-injectSignatureRandom gen pattern signal = do
-    let maxPos = V.length signal - length pattern
-    pos <- MWC.uniformR (0, maxPos) gen
-    return $ injectSignature pattern pos signal
-
--- | Injects an anomaly at a random position within the signal.
-injectAnomalyRandom :: MWC.GenIO -> AnomalyPattern -> V.Vector (Complex Double) -> IO (V.Vector (Complex Double))
-injectAnomalyRandom gen (AnomalyPattern pattern _) signal = do
-    let maxPos = V.length signal - length pattern
-    pos <- MWC.uniformR (0, maxPos) gen
-    return $ injectAnomaly pattern pos signal
+-- | Generates a stochastic multi-tone interference signal by adding random phases to each tone.
+generateMultiToneStochastic :: MWC.GenIO -> [Double] -- ^ Frequencies
+                             -> Double -- ^ Sample rate in Hz
+                             -> Double -- ^ Duration in seconds
+                             -> IO (V.Vector (Complex Double))
+generateMultiToneStochastic gen frequencies sr duration = do
+    let numSamples = floor (sr * duration) :: Int
+        t = [0, 1 / sr .. duration - 1 / sr]
+    -- For each frequency, generate a list of samples with a random phase
+    interference <- mapM (\f -> do
+                             phase <- MWC.uniformR (0, 2 * pi) gen
+                             return [cos (2 * pi * f * ti + phase) :+ sin (2 * pi * f * ti + phase) | ti <- t]
+                         ) frequencies
+    -- Sum all interference vectors element-wise
+    let summedInterference = foldl1 (+) interference
+    return $ LA.fromList summedInterference

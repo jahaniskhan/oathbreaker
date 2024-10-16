@@ -2,25 +2,22 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module RFProcessor.DigitalSignalProcessing
-    ( Signal
-    , SignalMetadata(..)
-    , RFProcessorT(..)
-    , runRFProcessor
-    , frequencyModulate
+    ( frequencyModulate
     , frequencyDemodulate
     , waveletTransform
     , adaptiveFilter
+    , SignalMetadata(..)
+    , runRFProcessor
     ) where
 
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Complex
 import Utils.Wavelet (Wavelet(..), getWaveletFilterPair, WaveletError(..))
+import Numeric.LinearAlgebra (Vector, fromList, toList, (!), (<>))
+import qualified Numeric.LinearAlgebra as LA
 
--- | Signal type (using Complex Double for I/Q data)
-type Signal = [Complex Double]
-
--- | Metadata for the signal
+-- | Signal metadata containing sampling rate, center frequency, and gain.
 data SignalMetadata = SignalMetadata
     { sampleRate      :: Double
     , centerFrequency :: Double
@@ -40,32 +37,32 @@ runRFProcessor (RFProcessorT action) signal metadata =
 frequencyModulate :: Double                  -- ^ Carrier frequency in Hz
                   -> RFProcessorT IO Signal  -- ^ Modulated signal
 frequencyModulate carrierFreq = do
-    signal <- ask
+    Signal _ samples <- ask
     metadata <- get
     let samplePeriod = 1 / sampleRate metadata
-        times = [n * samplePeriod | n <- [0..fromIntegral (length signal - 1)]]
-        modulatedSignal = zipWith (\s t -> s * cis (2 * pi * carrierFreq * t)) signal times
-    return modulatedSignal
+        times = [0..fromIntegral (LA.size samples - 1)] / samplePeriod
+        modulatedSignal = LA.fromList $ zipWith (\s t -> s * cis (2 * pi * carrierFreq * t)) (LA.toList samples) times
+    return $ Signal (sampleRate metadata) (LA.vector modulatedSignal)
 
 -- | Frequency demodulation of the signal
 frequencyDemodulate :: Double                  -- ^ Carrier frequency in Hz
                     -> RFProcessorT IO Signal  -- ^ Demodulated signal
 frequencyDemodulate carrierFreq = do
-    signal <- ask
+    Signal _ samples <- ask
     metadata <- get
     let samplePeriod = 1 / sampleRate metadata
-        times = [n * samplePeriod | n <- [0..fromIntegral (length signal - 1)]]
-        demodulatedSignal = zipWith (\s t -> s * cis (-2 * pi * carrierFreq * t)) signal times
-    return demodulatedSignal
+        times = [0..fromIntegral (LA.size samples - 1)] / samplePeriod
+        demodulatedSignal = LA.fromList $ zipWith (\s t -> s * cis (-2 * pi * carrierFreq * t)) (LA.toList samples) times
+    return $ Signal (sampleRate metadata) (LA.vector demodulatedSignal)
 
 -- | Perform wavelet transform using specified wavelet and level
 waveletTransform :: Wavelet
                  -> Int
                  -> RFProcessorT IO (Either WaveletError ([Double], [Double]))
 waveletTransform wavelet level = do
-    signal <- ask
-    let realSignal = map realPart signal
-        imagSignal = map imagPart signal
+    Signal _ samples <- ask
+    let realSignal = map realPart $ LA.toList samples
+        imagSignal = map imagPart $ LA.toList samples
     case getWaveletFilterPair wavelet of
         Left err -> return $ Left err
         Right (lowPass, highPass) -> do
@@ -85,8 +82,8 @@ multiLevelDWT signal level lowPass highPass = go signal level []
   where
     go s 0 detailCoeffs = (s, concat (reverse detailCoeffs))
     go s l detailCoeffs =
-      let (a, d) = dwt s lowPass highPass
-      in go a (l - 1) (d : detailCoeffs)
+        let (a, d) = dwt s lowPass highPass
+        in go a (l - 1) (d : detailCoeffs)
 
 -- | Single level DWT using specified wavelet filters
 dwt :: [Double]         -- ^ Input signal
@@ -117,25 +114,29 @@ adaptiveFilter :: Signal     -- ^ Desired signal
                -> Int        -- ^ Filter order
                -> RFProcessorT IO Signal
 adaptiveFilter desired mu order = do
-    signal <- ask
-    let lms :: [Double] -> [Complex Double] -> [Complex Double] -> [Complex Double] -> [Complex Double] -> [Complex Double]
-        lms coeffs [] [] _ output = output
-        lms coeffs (x:xs) [] history output =
-            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
-                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart y))) (map realPart history))
-            in lms coeffs' xs [] (x : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
-        lms coeffs [] (d:ds) history output = 
-            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
-                e = d - y
-                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart e))) (map realPart history))
-            in lms coeffs' [] ds ((0 :+ 0) : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
-        lms coeffs (x:xs) (d:ds) history output =
-            let y = sum $ zipWith (*) (map (:+ 0) coeffs) history
-                e = d - y
-                coeffs' = zipWith (+) coeffs (map ((* (mu * realPart e))) (map realPart history))
-            in lms coeffs' xs ds (x : take (order - 1) (history ++ repeat (0 :+ 0))) (y : output)
-        paddedInput = replicate order (0 :+ 0) ++ signal
-        desiredPadded = replicate order (0 :+ 0) ++ desired
-        coeffsInit = replicate order 0
-        historyInit = replicate order (0 :+ 0)
-    return $ reverse $ lms coeffsInit paddedInput desiredPadded historyInit []
+    Signal _ input <- ask
+    let desiredList = LA.toList $ LA.vector $ LA.toList desired
+        inputList = LA.toList input
+        -- Initialize filter coefficients to zero
+        lmsCoeffs = replicate order 0.0
+        -- Perform LMS adaptive filtering
+        (filtered, finalCoeffs) = lms adaptiveFilterStep inputList desiredList lmsCoeffs []
+    return $ Signal 0 (LA.fromList filtered)
+  where
+    -- LMS filter step
+    adaptiveFilterStep :: [Double] -> Double -> [Double] -> [Double] -> (Double, [Double])
+    adaptiveFilterStep history d coeffs =
+        let y = sum $ zipWith (*) coeffs (reverse history)
+            e = d - y
+            coeffs' = zipWith (\c h -> c + mu * e * h) coeffs (reverse history)
+        in (y, coeffs')
+
+    -- LMS algorithm
+    lms :: ( [Double] -> Double -> [Double] -> [Double] -> (Double, [Double]) )
+        -> [Double] -> [Double] -> [Double] -> [Double] -> ([Double], [Double])
+    lms _ [] _ _ acc = (reverse acc, [])
+    lms step (x:xs) (d:ds) coeffs acc =
+        let history = take (length coeffs) (x : acc)
+            (y, coeffs') = step history d coeffs
+        in lms step xs ds coeffs' (y : acc)
+    lms _ _ _ _ acc = (reverse acc, [])

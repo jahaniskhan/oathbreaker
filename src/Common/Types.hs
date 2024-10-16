@@ -1,3 +1,5 @@
+{-# LANGUAGE NamedFieldPuns #-}
+
 module Common.Types (
     AcquisitionConfig(..),
     SignalSource(..),
@@ -9,7 +11,7 @@ module Common.Types (
 
 -- | Configuration settings for signal acquisition.
 data AcquisitionConfig = AcquisitionConfig
-    { sampleRate   :: Double -- ^ Sampling rate in Hz
+    { acquisitionSampleRate :: Double -- ^ Sampling rate in Hz
     , signalLength :: Int    -- ^ Number of samples to acquire
     } deriving (Show, Eq)
 

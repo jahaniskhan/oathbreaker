@@ -1,4 +1,7 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module ProactiveDefense.AdaptiveJamming
     ( adaptiveJamming
@@ -11,7 +14,7 @@ import Simulator.SignalGenerator
     , generateInterferenceStochastic
     , InterferenceType(..)
     )
-import ThreatDetection.AnomalyDetection
+import ThreatDetection.AnomalyDetection (Anomaly(..), AnomalyType(..))
 import Numeric.LinearAlgebra (Vector, Matrix)
 import qualified Numeric.LinearAlgebra as LA
 import Utils.PCA (performPCA, PrincipalComponents(..))
@@ -37,12 +40,31 @@ adaptiveJamming anomalies sampleRate duration = do
     interferenceVectors <- mapM (\anomaly -> generateToneInterference gen anomaly sampleRate duration) validAnomalies
 
     -- Combine interference vectors safely
-    let numSamples = round (sampleRate * duration)
+    let numSamples = floor (sampleRate * duration)
         combinedInterference = if null interferenceVectors
                                 then LA.konst 0 numSamples
                                 else foldl1 (+) interferenceVectors
 
     return combinedInterference
+
+  where
+    -- | Function to validate anomaly features
+    validateAnomaly :: Anomaly -> Bool
+    validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
+        isFinite anomalyFrequency && anomalyFrequency > 0 &&
+        isFinite anomalyMagnitude && anomalyMagnitude >= 0 &&
+        isFinite anomalyScore && anomalyScore >= 0
+
+    -- Helper function to check if a value is finite
+    isFinite :: RealFloat a => a -> Bool
+    isFinite x = not (isNaN x || isInfinite x)
+
+    -- | Generate a tone interference for a given anomaly
+    generateToneInterference :: MWC.GenIO -> Anomaly -> Double -> Double -> IO (LA.Vector (Complex Double))
+    generateToneInterference gen anomaly sampleRate duration = do
+        let freq = anomalyFrequency anomaly
+        let interferenceType = Tone freq
+        generateInterferenceDeterministic interferenceType sampleRate duration
 
 -- | Perform adaptive jamming using PCA.
 adaptiveJammingPCA :: Int -> [Anomaly] -> Double -> Double -> IO (Either String (LA.Vector (Complex Double)))
@@ -79,50 +101,49 @@ adaptiveJammingPCA numComponents anomalies sampleRate duration = runExceptT $ do
     -- Initialize the random generator within the ExceptT monad
     gen <- liftIO MWC.createSystemRandom
 
-    -- Generate interference signal using SpreadSpectrum
+    -- Generate interference signal using SpreadSpectrum based on PCA results
     interferenceVector <- liftIO $ generateInterferenceStochastic gen (SpreadSpectrum validFrequencies) sampleRate duration
     return interferenceVector
 
-    where
-        -- | Function to validate anomaly features
-        validateAnomaly :: Anomaly -> Bool
-        validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
-            isFinite anomalyFrequency && anomalyFrequency > 0 &&
-            isFinite anomalyMagnitude && anomalyMagnitude >= 0 &&
-            isFinite anomalyScore && anomalyScore >= 0
+  where
+    -- | Function to validate anomaly features
+    validateAnomaly :: Anomaly -> Bool
+    validateAnomaly Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
+        isFinite anomalyFrequency && anomalyFrequency > 0 &&
+        isFinite anomalyMagnitude && anomalyMagnitude >= 0 &&
+        isFinite anomalyScore && anomalyScore >= 0
 
-        -- Helper function to check if a value is finite
-        isFinite :: RealFloat a => a -> Bool
-        isFinite x = not (isNaN x || isInfinite x)
+    -- Helper function to check if a value is finite
+    isFinite :: RealFloat a => a -> Bool
+    isFinite x = not (isNaN x || isInfinite x)
 
-        -- Generate a tone interference for a given anomaly
-        generateToneInterference :: MWC.GenIO -> Anomaly -> Double -> Double -> IO (LA.Vector (Complex Double))
-        generateToneInterference gen anomaly sampleRate duration = do
-            let freq = anomalyFrequency anomaly
-            let interferenceType = Tone freq
-            let interference = generateInterferenceDeterministic interferenceType sampleRate duration
-            return interference
+    -- | Generate a tone interference for a given anomaly
+    generateToneInterference :: MWC.GenIO -> Anomaly -> Double -> Double -> IO (LA.Vector (Complex Double))
+    generateToneInterference gen anomaly sampleRate duration = do
+        let freq = anomalyFrequency anomaly
+        let interferenceType = Tone freq
+        generateInterferenceDeterministic interferenceType sampleRate duration
 
-        -- | Converts an anomaly to a feature vector.
-        anomalyToFeatureVector :: Anomaly -> [Double]
-        anomalyToFeatureVector Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
-            [ anomalyFrequency, anomalyMagnitude, anomalyScore ]
+    -- | Converts an anomaly to a feature vector.
+    anomalyToFeatureVector :: Anomaly -> [Double]
+    anomalyToFeatureVector Anomaly { anomalyFrequency, anomalyMagnitude, anomalyScore } =
+        [ anomalyFrequency, anomalyMagnitude, anomalyScore ]
 
-        -- | Standardize the data matrix (zero mean and unit variance)
-        standardizeData :: LA.Matrix Double -> ExceptT String IO (LA.Matrix Double)
-        standardizeData mat = do
-            let means = meanVector mat
-                centeredMat = mat - LA.asRow means
-                stdDevs = stdVector mat
-            -- Check that all standard deviations are non-zero
-            unless (all (/= 0) (LA.toList stdDevs)) $
-                throwE "Standard deviation is zero for one or more features; cannot standardize data."
+    -- | Standardize the data matrix (zero mean and unit variance)
+    standardizeData :: Matrix Double -> ExceptT String IO (Matrix Double)
+    standardizeData mat = do
+        let means = meanVector mat
+            centeredMat = mat - LA.asRow means
+            stdDevs = stdVector mat
+        -- Check that all standard deviations are non-zero
+        unless (all (/= 0) (LA.toList stdDevs)) $
+            throwE "Standard deviation is zero for one or more features; cannot standardize data."
 
-            let standardizedMat = centeredMat / LA.asRow stdDevs
-            return standardizedMat
+        let standardizedMat = centeredMat / LA.asRow stdDevs
+        return standardizedMat
 
-        -- | Compute covariance matrix
-        computeCovarianceMatrix :: LA.Matrix Double -> LA.Matrix Double
-        computeCovarianceMatrix stdData =
-            let n = fromIntegral (LA.rows stdData)
-            in (LA.tr stdData LA.<> stdData) / (n - 1)
+    -- | Compute covariance matrix
+    computeCovarianceMatrix :: Matrix Double -> Matrix Double
+    computeCovarianceMatrix stdData =
+        let n = fromIntegral (LA.rows stdData)
+        in (LA.tr stdData LA.<> stdData) / (n - 1)
